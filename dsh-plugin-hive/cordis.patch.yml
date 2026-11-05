@@ -1,0 +1,5 @@
+- insert:
+    - id: hive
+      name: dsh-plugin-hive
+      inject: [webServer, llm, tools]
+      config: {}

@@ -51,6 +51,14 @@ function costOf(pricing, usage) {
   return +(inM * (pricing.in || 0) + outM * (pricing.out || 0)).toFixed(6);
 }
 
+// ---- 可注入传输层 ----------------------------------------------------------
+// 作为 DSH 插件运行时，HIVE 不自己拿 API key，而是借用宿主已配置的模型：
+// 插件在启动时 setTransport(fn)，之后所有 chat() 都走宿主的 ctx.llm.stream。
+let _transport = null;
+export function setTransport(fn) { _transport = typeof fn === 'function' ? fn : null; }
+export function hasTransport() { return !!_transport; }
+
+
 /**
  * 调模型
  * @param {object} o
@@ -64,6 +72,26 @@ function costOf(pricing, usage) {
  */
 export async function chat(o) {
   const cfg = loadConfig();
+
+  // 0) 注入式传输层（DSH 插件模式）：用宿主已配置的模型，无需自备 API key
+  if (_transport) {
+    try {
+      const r = await _transport({
+        messages: [...o.messages],
+        json: !!o.json,
+        schemaHint: o.schemaHint,
+        maxTokens: o.maxTokens ?? 2048,
+        temperature: o.temperature,
+        tier: o.tier || 'cheap',
+        timeoutMs: o.timeoutMs || 120000,
+      });
+      if (r && r.ok) return { ...r, viaHost: true };
+      return { ok: false, error: r?.error || '宿主模型调用失败', provider: 'host', model: r?.model || '?', tier: o.tier || 'cheap', usage: { in: 0, out: 0 }, costCny: 0, viaHost: true };
+    } catch (e) {
+      return { ok: false, error: `宿主模型异常: ${e.message}`, provider: 'host', model: '?', tier: o.tier || 'cheap', usage: { in: 0, out: 0 }, costCny: 0, viaHost: true };
+    }
+  }
+
   const providerName = o.provider || cfg.llm.default;
   const p = cfg.llm.providers[providerName];
   if (!p) throw new Error(`未知 LLM provider: ${providerName}`);

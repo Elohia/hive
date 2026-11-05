@@ -1,0 +1,54 @@
+{
+  "name": "dsh-plugin-hive",
+  "version": "0.1.0",
+  "description": "HIVE 蜂巢：主动服务型超级智能体。左侧栏入口 + 任务中心（Inbox/Outbox）+ L1–L5 自主分级 + HITL 审批 + 监控看板，零依赖、开箱即用。",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "runtime/**",
+    "scripts/sync-runtime.mjs",
+    "README.md",
+    "README.en.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-layout"
+      ]
+    }
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "plugin",
+    "agent",
+    "proactive",
+    "hive",
+    "inbox",
+    "task-center",
+    "human-in-the-loop"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.5"
+  }
+}

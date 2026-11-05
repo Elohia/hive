@@ -40,7 +40,7 @@ const MIME = {
   '.map': 'application/json; charset=utf-8',
 };
 
-const CSP = [
+const CSP_BASE = [
   "default-src 'self'",
   "script-src 'self'",
   // 内联样式仅用于少量动态颜色（style 属性），脚本严格外链
@@ -50,14 +50,19 @@ const CSP = [
   "font-src 'self'",
   "base-uri 'none'",
   "form-action 'self'",
-  "frame-ancestors 'none'",
-].join('; ');
+];
 
-function setSecurityHeaders(res) {
+/** 允许被同源页面嵌入（DSH 插件面板用 iframe 挂载时） */
+function csp(env) {
+  const fa = env && env.embeddable ? "frame-ancestors 'self'" : "frame-ancestors 'none'";
+  return CSP_BASE.concat([fa]).join('; ');
+}
+
+function setSecurityHeaders(res, env) {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'no-referrer');
-  res.setHeader('X-Frame-Options', 'DENY');
-  res.setHeader('Content-Security-Policy', CSP);
+  res.setHeader('X-Frame-Options', env && env.embeddable ? 'SAMEORIGIN' : 'DENY');
+  res.setHeader('Content-Security-Policy', csp(env));
   res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
 }
 
@@ -241,7 +246,7 @@ async function handle(req, res, env) {
     }
   });
 
-  setSecurityHeaders(res);
+  setSecurityHeaders(res, env);
   let url;
   try { url = new URL(rawUrl, 'http://127.0.0.1'); }
   catch { return sendJson(res, 400, { error: '非法 URL' }); }
@@ -283,6 +288,8 @@ export function createHiveServer(opts = {}) {
     logger,
     runtime,
     bodyLimit: opts.bodyLimit ?? 1024 * 1024,
+    // 允许被同源页面 iframe 嵌入（DSH 插件面板）
+    embeddable: opts.embeddable === true,
   };
 
   const server = http.createServer((req, res) => {
@@ -302,6 +309,32 @@ export function createHiveServer(opts = {}) {
   server.keepAliveTimeout = 5000;
 
   return { server, cfg, webRoot, runtime, env };
+}
+
+/**
+ * 只取出「请求处理函数」，不监听端口 —— 给 DSH 插件把看板挂到宿主 webServer 上用。
+ * @param {{cfg?:object, webRoot?:string, logger?:Function, bodyLimit?:number,
+ *          embeddable?:boolean, mountPath?:string}} [opts]
+ * @returns {{handler:(req:any,res:any)=>Promise<void>, env:object, cfg:object, webRoot:string, dispose:()=>void}}
+ */
+export function createHandler(opts = {}) {
+  const { server, cfg, webRoot, env } = createHiveServer({ embeddable: true, ...opts });
+  const mount = String(opts.mountPath || '').replace(/\/+$/, '');
+  const handler = async (req, res) => {
+    if (mount) {
+      const raw = req.url || '/';
+      if (!raw.startsWith(mount)) return sendNotFound(req, res, raw);
+      req.url = raw.slice(mount.length) || '/';
+    }
+    return handle(req, res, env);
+  };
+  return {
+    handler,
+    env,
+    cfg,
+    webRoot,
+    dispose: () => { try { server.close(); } catch { /* noop */ } },
+  };
 }
 
 function resolvePort(explicit, cfg) {

@@ -106,6 +106,13 @@ class ApiError extends Error {
 }
 
 // ───────────────────────────── API ─────────────────────────────
+// 部署基路径：独立跑时是 ''（挂在根），作为 DSH 插件挂载时是 '/hive'。
+// 这样同一份前端在两种部署下都不用改代码。
+const BASE = (typeof window !== 'undefined' && window.__HIVE_BASE__ != null
+  ? window.__HIVE_BASE__
+  : (typeof location !== 'undefined' && location.pathname.startsWith('/hive') ? '/hive' : '')
+).replace(/\/+$/, '');
+
 async function api(path, opts = {}) {
   const headers = {
     Accept: 'application/json',
@@ -113,7 +120,8 @@ async function api(path, opts = {}) {
     ...(opts.body ? { 'Content-Type': 'application/json' } : {}),
     ...(opts.headers || {}),
   };
-  const res = await fetch(path, { ...opts, headers });
+  const url = path.startsWith('/api/') ? BASE + path : path;
+  const res = await fetch(url, { ...opts, headers });
   const text = await res.text();
   let data = null;
   try { data = text ? JSON.parse(text) : {}; }
@@ -228,7 +236,7 @@ function tasksMiniHtml(tasks) {
 function artifactsHtml(list) {
   if (!list || !list.length) return '';
   return `<div class="art-list">${list.map((a) => `<div class="art-item">
-    <span class="name"><a href="/api/artifacts/${encodeURIComponent(a.id)}" target="_blank" rel="noopener">${esc(a.title || a.path)}</a></span>
+    <span class="name"><a href="${BASE}/api/artifacts/${encodeURIComponent(a.id)}" target="_blank" rel="noopener">${esc(a.title || a.path)}</a></span>
     ${a.kind ? chip('muted', a.kind) : ''}
     <span class="size">${fmt.bytes(a.bytes)}</span>
   </div>`).join('')}</div>`;
@@ -1435,7 +1443,7 @@ function setConnState({ open, error }) {
 
 function connectSSE() {
   if (!('EventSource' in window)) { startPolling(); return; }
-  const url = '/api/stream' + (URL_TOKEN ? '?token=' + encodeURIComponent(URL_TOKEN) : '');
+  const url = BASE + '/api/stream' + (URL_TOKEN ? '?token=' + encodeURIComponent(URL_TOKEN) : '');
   let es;
   try { es = new EventSource(url); }
   catch { startPolling(); return; }
@@ -1522,3 +1530,4 @@ async function boot() {
 
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
 else boot();
+
