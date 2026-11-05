@@ -83,15 +83,27 @@ dsh plugin --profile web add github:Elohia/dsh-plugin-hive
 
 1. **左侧栏**出现六边形 **HIVE** 图标 → 点开，主区应看到 48px 控制条 + 看板首屏（收件箱）。
 2. 控制条最左边的圆点是状态（正常 / 降级 / 异常 / 未初始化），旁边的计数是「待办 · 待拍板 · 在跑」。
-3. 直接打接口（在装了 DSH 的机器上）：
+3. 直接打接口（把端口换成你 GUI 的端口）：
 
 ```powershell
 curl http://127.0.0.1:<DSH Web 端口>/hive/api/plugin/status
-# 期望：{"ok":true,"mode":"plugin","phase":"ready", ..., "engine":{"running":true,...},
-#        "model":{"ready":true,"current":"<provider>/<model>"}, "created":[...]}
+```
+
+本机真实安装后的响应（原样摘录，供对照）：
+
+```json
+{"ok":true,"mode":"plugin","phase":"ready","home":"F:\\dsh-home\\hive",
+ "dbPath":"F:\\dsh-home\\hive\\data\\hive.db",
+ "engine":{"running":true,"ticks":60,"tickSec":3,"pulseTimeoutSec":240,
+           "db":{"items":28,"tasks":0}},
+ "model":{"ready":true,"current":"deepseek-official/deepseek-flash","error":null},
+ "created":["config/hive.json","config/policies.json"]}
 ```
 
 4. 看板第 9 页签「自检」应给出总体结论 PASS/WARN/FAIL，以及逐项明细。
+   本机首跑是 `WARN（13 PASS / 2 WARN / 0 FAIL，15 项 = 9 核心 + 6 依赖）`，两个 WARN 分别是
+   `proc` 执行器（需显式配 command）与「守护进程未运行」（插件模式下引擎在 DSH 进程内，
+   不写独立 daemon 的 `data/hive.lock` —— 见 §6 FAQ）。
 
 > 注意：看板挂在宿主 webServer 上，端口就是 **GUI 那个端口**（不是独立版的 8787）。
 
@@ -99,7 +111,7 @@ curl http://127.0.0.1:<DSH Web 端口>/hive/api/plugin/status
 
 ```powershell
 node --no-warnings scripts/selftest-host.mjs     # Host 半，19 项
-node --no-warnings scripts/check-client.mjs      # 浏览器半，68 项
+node --no-warnings scripts/check-client.mjs      # 浏览器半，70 项
 ```
 
 ---
@@ -174,6 +186,7 @@ dsh plugin --profile web remove dsh-plugin-hive
 | 现象 | 原因 | 处理 |
 |---|---|---|
 | 左侧栏没有 HIVE 图标 | 包只在依赖里、没在 `dsh.profile.bundles`；或客户端 bundle 没重载 | 检查 profile `package.json` 的 bundles；重启 DSH |
+| 自动任务页签说「守护进程未运行」，但控制条状态是正常 | 该 KPI 看的是独立版 daemon 的锁文件 `data/hive.lock`，插件把引擎跑在 DSH 进程内、不写这个锁 | **以控制条状态点为准**；自检里那条 `daemon=WARN` 也是这个原因，属预期 |
 | 面板显示「HIVE 还没接上」 | Host 半没就绪（phase=error/uninit） | 展开引导卡；或看 `/hive/api/plugin/status` 的 `error` |
 | 控制条状态 = 异常，自检 llm=FAIL | DSH 里没选模型 / 模型不可用 | 在 DSH 设置里选一个模型，然后点「刷新」 |
 | 自检 sqlite=FAIL | Node < 22.5 或 Node 未带 `node:sqlite` | 升级 Node（插件不会替你装 Node） |
@@ -205,9 +218,11 @@ dsh plugin --profile web remove dsh-plugin-hive
 | 结论 | 来源 |
 |---|---|
 | 开箱 7 步、19 项自测、`/hive` 前缀注册、SAMEORIGIN、4 个工具、卸载干净 | **本机实测**（`scripts/selftest-host.mjs`，19/19） |
-| 左侧栏槽位/图标/样式作用域/接口契约/依赖与版本 UI/不白屏、卸载后无遗留定时器 | **本机实测**（`scripts/check-client.mjs`，68/68） |
+| 左侧栏槽位/图标/样式作用域/接口契约/依赖与版本 UI/不白屏、卸载后无遗留定时器 | **本机实测**（`scripts/check-client.mjs`，70/70） |
 | 独立看板可单跑（`/api/health` 200、`/` 200） | **本机实测** |
-| `install_bundle` 会 `pnpm add` + 写 bundles | 依据 DSH 工具语义与本机 profile 现状（`link:` / `github:` 依赖确实以这两种形式存在） |
-| 版本抽屉的「读 GitHub Releases / 走 `ctx.pluginManager`」路径 | 代码 + 桩测试（`check-client` 覆盖 UI 与降级文案）；**真机未点过**（本机插件尚未装进 profile） |
-| 真实 profile 的 GUI 端到端安装 | **未在本机记录**（安装会改动使用中的 profile，留给你按本文步骤操作） |
+| 路径 A 的 `link:` 安装真实生效 | **本机实测**：desktop profile 里就是 `"dsh-plugin-hive": "link:D:/hive/dsh-plugin-hive"` 且已在 bundles |
+| 安装后的接口链路 | **本机实测（只读探针）**：`/plugin/status` 200（phase=ready、引擎 running、28 条事项、12 脉冲）、`/plugin/doctor` 5/5 PASS、`/hive/` 200（14522 B、9 页签、SAMEORIGIN）、`/api/setup/doctor` WARN(13/2/0)、`/api/deps` 200（6/6 就绪）、`/api/agents` 6/7 可用、`/api/plugin/version` 200、`/api/autopilots` 12 条、`/api/cost` 200 |
+| 路径 B（`github:` / npm） | **未验证**：仓库尚未发布（本机无 remote），因此这两条 spec 当前不可用 |
+| 版本抽屉的「点升级/降级」落地动作 | 代码 + 桩测试覆盖 UI 与降级文案；**真机未点过**（真机上 `latest=null`，因为仓库未发布） |
+| GUI 逐屏外观（图标长什么样、抽屉动画） | **未记录**（无截图）；接口与自测层面已验证 |
 | GitHub Actions 的 CI | **未在 GitHub 上跑过**（scaffold，首次推送后按实际调整） |

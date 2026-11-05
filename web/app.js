@@ -1387,7 +1387,7 @@ function renderDeps(d) {
       <td>${depStatusChip(x)}</td>
       <td><div class="dash-actions">${actions.join('')}${busy ? '<span class="dim small">处理中…</span>' : ''}</div></td>
     </tr>${open ? `<tr class="dep-vers-row"><td colspan="5">
-      <div class="dash-note">当前 ${esc(x.version || '—')}；下面只列比当前更低的版本（取自最近 20 个）：</div>
+      <div class="dash-note">当前 ${esc(x.version || '—')}；下面只列比当前更低的版本（最多 20 个）：</div>
       <div class="dash-actions" style="margin-top:6px">
         ${lower.map((v) => `<button class="btn sm" data-deps-act="pick" data-dep="${esc(x.id)}" data-version="${esc(v)}" ${busy ? 'disabled' : ''}>装 ${esc(v)}</button>`).join('')
           || '<span class="dim small">最近 20 个版本里没有比当前更低的</span>'}

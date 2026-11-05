@@ -9,7 +9,7 @@
 | 运行要求 | DSH（任意带 `webServer` + `llm` + `tools` 的 profile）· Node ≥ 22.5（`node:sqlite` 是内置模块） |
 | npm 依赖 | **0 个**（只用 Node 内置；看板零 CDN、离线可用） |
 | 数据位置 | `$DSH_HOME/hive/`（本地 SQLite 单库） |
-| 本机实测 | Host 半自测 **19/19 PASS** · 浏览器半自测 **68/68 PASS** · 独立看板 `/api/health` 200 |
+| 本机实测 | Host 半自测 **19/19 PASS** · 浏览器半自测 **70/70 PASS** · 独立看板 `/api/health` 200 |
 
 ---
 
@@ -87,7 +87,7 @@ plugin_manager({ action: "install_bundle", target: "github:Elohia/dsh-plugin-hiv
 这是本插件与「先配一堆东西才能跑」的差别，五条都能在代码里指到：
 
 1. **内置全部运行时**：`runtime/` 是完整 HIVE（46 个文件 / 约 560 KB），`package.json` 里 `dependencies` 为空 —— 不靠用户机器上先装一套 HIVE，也不引第三方 npm 包。
-2. **模型直接借用你在 DSH 里已配好的那个**：插件启动时用 `ctx.llm.stream` 实现 HIVE 的 chat 传输层（`runtime/src/core/llm.mjs` 的 `setTransport`），模型挑的是你当前会话选择的 provider/model（实测拿到 `deepseek/deepseek-chat`）。**不需要另配 API key**；开箱时还会把默认配置里指向别人机器的凭据路径清空。
+2. **模型直接借用你在 DSH 里已配好的那个**：插件启动时用 `ctx.llm.stream` 实现 HIVE 的 chat 传输层（`runtime/src/core/llm.mjs` 的 `setTransport`），模型挑的是你当前会话选择的 provider/model（selftest 桩拿到 `deepseek/deepseek-chat`；真实运行拿到 `deepseek-official/deepseek-flash`）。**不需要另配 API key**；开箱时还会把默认配置里指向别人机器的凭据路径清空。
 3. **首次激活自动开箱**：建 `$DSH_HOME/hive/`（`config/`、`data/`、`data/{runs,artifacts,logs,work,calendar}`）→ 写默认 `hive.json` / `policies.json` → 建库建表 → 启动引擎 → **种 12 条定时巡检** → 注册 `/hive` 路由。用户什么都不用做（自测里这四步逐项 PASS）。
 4. **外部 CLI 全部可选**：`codex` / `pi` / `claude` / `agently-cli` 没装也不影响主链路 —— 没装就用内置 `llm` 执行器与 `dsh` 执行器，L1/L2 内联出结论、L3+ 派 `dsh`。少一个执行器只少一种「干活的手」，不是功能残缺。
 5. **自检页告诉你缺什么**：自检页把每一项写成 PASS/WARN/FAIL，附「缺什么 + 怎么补」，能一键装的给按钮（`npm i -g`，固定白名单、180s 超时、不执行任何需要交互登录的动作）。
@@ -128,8 +128,8 @@ DSH 宿主（已有）
   ├─ ctx.webServer.register('/hive', prefix) ─► 看板 + /hive/api/*
   └─ ctx.tools.register ──► hive_status / hive_capture / hive_run / hive_decide
 
-插件 Host 半（index.js + engine.mjs）
-  首次激活：开箱 → 建库 → 注入模型传输层 → 启引擎 → 挂路由 → 注册工具
+插件 Host 半（index.js + engine.mjs + version.mjs）
+  首次激活：开箱 → 建库 → 注入模型传输层 → 启引擎 → 挂路由 → 注册工具 → 接版本管理
   引擎每 3s 一拍：到期脉冲 → 看门狗(20s) → 队列非阻塞派发 → 心跳(5min)
 
 内置运行时（runtime/，同步自独立版 HIVE）
@@ -177,7 +177,7 @@ dsh-plugin-hive/
 └─ scripts/
    ├─ sync-runtime.mjs 从独立版源码仓库同步 runtime/（维护用）
    ├─ selftest-host.mjs 假 ctx 跑 Host 半（19 项）
-   └─ check-client.mjs node:vm 桩环境跑 client.js（68 项）
+   └─ check-client.mjs node:vm 桩环境跑 client.js（70 项）
 ```
 
 ---
@@ -196,7 +196,7 @@ node --check index.js && node --check client.js && node --check engine.mjs && no
 # 2) Host 半自测：假 ctx + 临时 DSH_HOME，19 项逐条断言
 node --no-warnings scripts/selftest-host.mjs
 
-# 3) 浏览器半自测：node:vm 造一个最小浏览器环境跑 client.js，68 项断言
+# 3) 浏览器半自测：node:vm 造一个最小浏览器环境跑 client.js，70 项断言
 node --no-warnings scripts/check-client.mjs
 ```
 
@@ -208,21 +208,38 @@ Copy-Item runtime\config-defaults\*.json "$h\config\"; $env:HIVE_HOME=$h;
 node --no-warnings runtime/src/server/http.mjs --port 8899   # 打开 http://127.0.0.1:8899/
 ```
 
-### 本机实测（2026-11-05，Windows 11 / Node v24.14.1）
+### 本机实测（2026-11-05，Windows 11 / Node v24.14.1 自测 · v24.21.0 应用进程）
+
+**装到真实 profile 之后（`link:` 安装，live 只读探针）**
+
+| 验证项 | 结果 |
+|---|---|
+| 安装 | desktop profile 里 `"dsh-plugin-hive": "link:D:/hive/dsh-plugin-hive"`，并已在 `dsh.profile.bundles` 中 |
+| 插件状态 | `GET /hive/api/plugin/status` 200：`phase=ready`、引擎 running、已扫入 28 条事项、12 条脉冲 |
+| 借用宿主模型 | live 解析到 `deepseek-official/deepseek-flash`（跟着你在 DSH 里选的模型走） |
+| 看板 | `GET /hive/` 200（14522 B，9 个页签）、`X-Frame-Options=SAMEORIGIN`、CSP 含 `frame-ancestors 'self'` |
+| 插件级自检 | `GET /hive/api/plugin/doctor` 5 项全 PASS |
+| 完整自检 | `GET /hive/api/setup/doctor` → **WARN（13 PASS / 2 WARN / 0 FAIL，共 15 项 = 9 核心 + 6 依赖）**；2 个 WARN 是 `proc` 执行器（需显式配 command）与「守护进程未运行」（见已知限制 2） |
+| Agent 依赖 | `GET /hive/api/deps` 200；6 项依赖全部就绪（dsh 0.1.5-rc.2 / pi 0.84.1 / codex 0.153.4 / claude 2.1.195 / agently ✓） |
+| 执行器 | `GET /hive/api/agents` → **6/7 可用**：llm / dsh / pi / codex / claude / shell；`proc` 不可用（预期） |
+| 版本 | `GET /hive/api/plugin/version` 200：当前 0.1.0；仓库未发布时 `latest=null` 且如实报「读不到」 |
+| 自动任务 | `GET /hive/api/autopilots` 200：12 条脉冲 |
+
+**两侧自测（不装 DSH 也能跑，用临时目录）**
 
 | 验证项 | 结果 | 怎么验的 |
 |---|---|---|
 | Host 半自测 | **19/19 PASS** | 命令 2 |
-| 浏览器半自测 | **68/68 PASS**（槽位注册、图标、样式作用域、接口契约、依赖/版本 UI、不白屏） | 命令 3 |
+| 浏览器半自测 | **70/70 PASS**（槽位注册、图标、样式作用域、接口契约、依赖/版本 UI、不白屏） | 命令 3 |
 | 开箱 | 建 config/ 与 data/、建库、**种 12 条脉冲** | 命令 2（`provision.*` / `seedPulses: 新增 12 条脉冲`） |
-| 借用宿主模型 | `deepseek/deepseek-chat` | 命令 2（`model.transport`） |
+| 借用宿主模型 | `deepseek/deepseek-chat`（selftest 的桩默认；真实运行见上表） | 命令 2（`model.transport`） |
 | 看板路由 | `/hive` 以 `prefix` 注册；`X-Frame-Options=SAMEORIGIN` + `frame-ancestors 'self'` | 命令 2（`route.*` / `web.frameable`） |
 | 真实巡检 | 扫到 29 条 / 新增 28 条（本机邮箱 + git + 文档 + 本机自动化 + 自检） | 命令 2（`api.plugin.scan`） |
 | 4 个工具 | `hive_status,hive_capture,hive_run,hive_decide` | 命令 2（`tools.registered`） |
 | 卸载 | 引擎停、路由下线、global 清理 | 命令 2（`dispose.clean`） |
 | 独立看板 | `/api/health` 200、`/` 200 | 可选第 4 条 |
 
-> `runtime/` 是独立版 HIVE 的同步副本：独立版另有 5 套更细的测试套件（在源码仓库的
+> 断言条数会随脚本增长（2026-11-05 那一刻是 19 + 70），以你本地命令输出的数字为准。`runtime/` 是独立版 HIVE 的同步副本：独立版另有 5 套更细的测试套件（在源码仓库的
 > `tests/`，不在本 npm 包内），覆盖传感器、执行器、HTTP 服务与端到端闭环。
 
 ---
@@ -230,20 +247,22 @@ node --no-warnings runtime/src/server/http.mjs --port 8899   # 打开 http://127
 ## 已知限制（诚实清单）
 
 1. **插件模式下「今日花费」恒为 ¥0.00**：模型调用走宿主的 `ctx.llm`，HIVE 不重复计费也不编造 token，所以成本记 0。副作用是日预算护栏**在插件模式里不会触发**（`ratio` 恒为 0）；真实花了多少请看你 DSH 侧的用量。改成自配 key 走 HTTP 直连才会记成本。
-2. **`codex` / `claude` 执行器可能不可用（本机实测）**：`codex` 因上游余额 402，`claude` 因凭据失效 401。换一台机器不一定复现；`probe()` 只验二进制与版本，验不了余额与凭据。不可用只是少一种执行器，L4/L5 默认走 `dsh`。
-3. **L4/L5 的「自主验证」= 产物落盘 + 可回溯**，没有独立的第二套验收器；「完成」是执行器自述加证据，不是第三方判定。
-4. **Toast 只在 Windows 10/11 生效**（用系统 PowerShell 5.1 的 WinRT，无需模块）。其它平台通知会失败但不影响主流程，信息仍落在看板事件与 Outbox 里。
-5. **默认配置里的绝对路径是本机路径**：`policies.json` 的 `write_allowlist_dirs` / `never_touch`、`sources` 的扫描根目录写的是作者本机的 `D:\…` / `F:\…`。换机器请改 `$DSH_HOME/hive/config/policies.json` 与 `hive.json`（否则红线与白名单会指向不存在的目录）。
-6. **同一个 `HIVE_HOME` 不要同时跑插件引擎和独立版 daemon**：两者语义等价但没有多进程协调，会共用一张库互相抢派单。二选一即可。
-7. **微信 / X 传感器默认关闭**，需要自己接适配器；**日历只支持 ICS**；关键词判定有误报（看板可手动「调级」纠正）。
-8. **成本是估算**：走自配 key 时按配置里的单价表算，可能与账单有偏差；`dsh` 执行器的 stdout 不含 usage，token 记 0 并标 `usage_unknown`。
-9. **`runtime/` 是同步副本，不是源码**：插件里的运行时由 `node scripts/sync-runtime.mjs` 从源码仓库整目录拷入
-   （看板 9 页签、自检、依赖接口都在里面）。改了源码却没重跑同步，插件里跑的还是旧的 —— 这是 0.1.0 最容易踩的坑。
-10. **「Agent 依赖」与「版本」的落地动作依赖宿主能力**：依赖列表走 `/hive/api/deps`（运行时未同步该接口则显示「接口未就绪」），
-    安装/更新/降级/卸载走宿主 `ctx.pluginManager`（宿主没提供则如实报「宿主没有提供 pluginManager」）。
-    用 `link:` 本地目录安装时，「版本」会提示升级/降级需要改成从 GitHub 或 registry 装。以上都只影响这两个抽屉页。
-11. **安装路径未在本文档作者机器上做 GUI 端到端记录**：本文验证的是 Host 半（假 ctx，19/19）、浏览器半（桩环境，68/68）
-    与独立看板。真实 profile 安装请按 [docs/INSTALL.md](docs/INSTALL.md) 走一遍，若行为不符以 `plugin_manager` 的返回为准。
+2. **自动任务页签的「守护进程」在插件模式下显示「未运行」**：它看的是独立版 daemon 的锁文件（`data/hive.lock`），而插件把引擎跑在 DSH 进程内，不写这个锁。**以控制条左侧的状态点为准**（那里是真实引擎状态）。所以自检里也会有 1 条 `daemon=WARN`，属预期。
+3. **`proc` 执行器不可用是正常的**：它是通用兜底，没显式配置 `executors.proc.command` 就不启用。本机探活 6/7 可用（llm / dsh / pi / codex / claude / shell）。
+4. **`codex` / `claude` 曾在本机跑任务时失败**：`codex` 上游余额 402、`claude` 凭据失效 401（二进制本身装着、探活 PASS）。`probe()` 只验二进制与版本，验不了余额与凭据；换机器不一定复现。不可用只是少一种执行器，L4/L5 默认走 `dsh`。
+5. **L4/L5 的「自主验证」= 产物落盘 + 可回溯**，没有独立的第二套验收器；「完成」是执行器自述加证据，不是第三方判定。
+6. **Toast 只在 Windows 10/11 生效**（用系统 PowerShell 5.1 的 WinRT，无需模块）。其它平台通知会失败但不影响主流程，信息仍落在看板事件与 Outbox 里。
+7. **默认配置里的绝对路径是本机路径**：`policies.json` 的 `write_allowlist_dirs` / `never_touch`、`sources` 的扫描根目录写的是作者本机的 `D:\…` / `F:\…`。换机器请改 `$DSH_HOME/hive/config/policies.json` 与 `hive.json`（否则红线与白名单会指向不存在的目录）。
+8. **同一个 `HIVE_HOME` 不要同时跑插件引擎和独立版 daemon**：两者语义等价但没有多进程协调，会共用一张库互相抢派单。二选一即可。
+9. **微信 / X 传感器默认关闭**，需要自己接适配器；**日历只支持 ICS**；关键词判定有误报（看板可手动「调级」纠正）。
+10. **成本是估算**：走自配 key 时按配置里的单价表算，可能与账单有偏差；`dsh` 执行器的 stdout 不含 usage，token 记 0 并标 `usage_unknown`。
+11. **`runtime/` 是同步副本，不是源码**：插件里的运行时由 `node scripts/sync-runtime.mjs` 从源码仓库整目录拷入
+    （看板 9 页签、自检、依赖接口都在里面）。改了源码却没重跑同步，插件里跑的还是旧的 —— 这是 0.1.0 最容易踩的坑。
+12. **「Agent 依赖」与「版本」的落地动作依赖宿主能力**：依赖列表走 `/hive/api/deps`，安装/更新/降级/卸载走宿主
+    `ctx.pluginManager`（宿主没提供则如实报「宿主没有提供 pluginManager」）。用 `link:` 本地目录安装时，
+    「版本」会提示升级/降级需要改成从 GitHub 或 registry 装。仓库未发布时读不到可用版本（`latest=null`，不编版本号）。
+13. **验证边界**：安装路径与各接口已在本机真实 profile 上只读探针验证（见上表）；**GUI 逐屏点击**（左侧栏图标长什么样、
+    抽屉动画等）没有截图记录，属外观层面。
 
 ---
 

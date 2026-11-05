@@ -727,7 +727,8 @@ function normalizeMeta(doc, info) {
   return {
     ok: true,
     latest,
-    versions: all.slice(0, 20),
+    versions: all.slice(0, 20),          // 契约字段：最近 20 个
+    versionsFull: all,                   // 内存里保留全量，用于算「比当前低的版本」
     totalVersions: all.length,
     distTags: tags,
     sizeHint: Number.isFinite(unpacked) && unpacked > 0 ? fmtBytes(unpacked) : null,
@@ -761,7 +762,12 @@ function loadPersistedMeta() {
 function persistMeta() {
   try {
     const byPkg = {};
-    for (const [pkg, e] of _meta.byPkg) if (e && e.value && e.value.ok) byPkg[pkg] = e.value;
+    for (const [pkg, e] of _meta.byPkg) {
+      if (!e || !e.value || !e.value.ok) continue;
+      // 全量版本表进 kv（codex 有 5700+ 个版本，约 100KB）：降级列表需要一个
+      // 「比当前版本低」的真实集合，只留前 N 个会让老版本的包降级不了。
+      byPkg[pkg] = v;
+    }
     if (!Object.keys(byPkg).length && !_meta.primaryFailedAt) return;
     kvSet(KV_META_KEY, {
       at: Date.now(),
@@ -864,6 +870,9 @@ export async function depsSnapshot({ force = false } = {}) {
     const meta = metas[i] || {};
     const version = st.version || null;
     const latest = meta.latest || null;
+    const allVersions = Array.isArray(meta.versionsFull) && meta.versionsFull.length
+      ? meta.versionsFull
+      : (Array.isArray(meta.versions) ? meta.versions : []);
     return {
       id: d.id,
       name: d.name,
@@ -876,6 +885,14 @@ export async function depsSnapshot({ force = false } = {}) {
       versionSource: st.source || null,
       latest,
       versions: Array.isArray(meta.versions) ? meta.versions : [],
+      // 降级用：比当前版本更低的最多 20 个（契约字段 versions 只放最近 20 个，
+      // 对「当前版本较旧」的情况，最近 20 个可能全都更高，所以单独给一份）
+      downgradeVersions: version
+        ? allVersions
+          .filter((v) => !/-(win32|darwin|linux|android|freebsd|alpine)-/i.test(v)) // 平台专用构件包（如 codex 的 win32-x64）不是 CLI 本体的可降级版本
+          .filter((v) => compareVersions(v, version) < 0)
+          .slice(0, 20)
+        : [],
       totalVersions: meta.totalVersions || 0,
       distTags: meta.distTags || {},
       sizeHint: meta.sizeHint || null,

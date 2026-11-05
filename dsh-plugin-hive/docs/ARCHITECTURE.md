@@ -176,10 +176,14 @@ Host 半用 `ctx.llm.stream` 实现它（`index.js` 的 `makeTransport`）：
 ## 10. 已知技术债
 
 1. 插件模式不记录 token/成本，预算护栏形同虚设（见 §4）。
-2. 同一 `HIVE_HOME` 无双引擎互斥保护（靠文档约束）。
-3. Windows Toast 依赖系统 PowerShell 5.1；其它平台只有看板通道。
-4. `runtime/` 是拷贝，源码改动需要人工 `sync-runtime.mjs`；没有 CI 校验「runtime 与源码一致」——
+2. 插件引擎不写独立版 daemon 的锁文件（`data/hive.lock`），所以看板「自动任务」页签的「守护进程」KPI
+   与自检的 `daemon` 项会显示未运行 —— 状态源不统一（一处看锁文件，一处看 `/plugin/status`）。
+3. 同一 `HIVE_HOME` 无双引擎互斥保护（靠文档约束）。
+4. Windows Toast 依赖系统 PowerShell 5.1；其它平台只有看板通道。
+5. `runtime/` 是拷贝，源码改动需要人工 `sync-runtime.mjs`；没有 CI 校验「runtime 与源码一致」——
    不同步时看板页签、`/api/deps`、`/api/setup/*` 都会落后一个版本（客户端已做「接口未就绪」降级）。
-5. 版本/依赖的落地动作依赖宿主服务 `ctx.pluginManager`。它在 `inject` 之外（可选），
+6. 版本/依赖的落地动作依赖宿主服务 `ctx.pluginManager`。它在 `inject` 之外（可选），
    宿主不提供时只能看版本、不能在本进程内装/升/卸。
-6. 版本检查访问 `api.github.com`（公开仓库无需 token，但有速率上限）；离线时如实报错。
+7. 版本检查访问 `api.github.com`（公开仓库无需 token，但有速率上限）；离线时如实报错。
+8. `inject` 只有 `webServer / llm / tools`；`ctx.agentDefaultModel`、`ctx.pluginManager` 都是可选读取，
+   缺了有兜底或降级 —— 代价是「同版本插件在不同宿主上能力不同」。

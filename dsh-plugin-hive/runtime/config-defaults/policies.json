@@ -2,78 +2,212 @@
   "version": 1,
   "note": "L1-L5 判定规则。确定性优先：先按 action 给 base level，再按修正项上下调，最后 clamp。",
   "actions": {
-    "read":            { "base": 1, "desc": "读取信息" },
-    "summarize":       { "base": 1, "desc": "总结/整理/提取待办" },
-    "classify":        { "base": 1, "desc": "分类打标" },
-    "analyze":         { "base": 2, "desc": "分析问题、给建议" },
-    "plan":            { "base": 2, "desc": "出执行方案" },
-    "draft":           { "base": 3, "desc": "生成草稿/中间成果" },
-    "write_local":     { "base": 3, "desc": "在工作区写文件" },
-    "code_change":     { "base": 4, "desc": "改代码并验证" },
-    "research":        { "base": 3, "desc": "多源调研并产出报告" },
-    "send_external":   { "base": 4, "desc": "对外发消息/邮件", "approval": true, "irreversible": true, "external": true },
-    "publish":         { "base": 4, "desc": "公开发布内容", "approval": true, "irreversible": true, "external": true },
-    "delete":          { "base": 4, "desc": "删除数据/仓库外文件", "approval": true, "irreversible": true },
-    "spend":           { "base": 3, "desc": "产生费用", "approval": true, "irreversible": true },
-    "deploy":          { "base": 4, "desc": "部署/上线", "approval": true, "irreversible": true, "external": true }
+    "read": {
+      "base": 1,
+      "desc": "读取信息"
+    },
+    "summarize": {
+      "base": 1,
+      "desc": "总结/整理/提取待办"
+    },
+    "classify": {
+      "base": 1,
+      "desc": "分类打标"
+    },
+    "analyze": {
+      "base": 2,
+      "desc": "分析问题、给建议"
+    },
+    "plan": {
+      "base": 2,
+      "desc": "出执行方案"
+    },
+    "draft": {
+      "base": 3,
+      "desc": "生成草稿/中间成果"
+    },
+    "write_local": {
+      "base": 3,
+      "desc": "在工作区写文件"
+    },
+    "code_change": {
+      "base": 4,
+      "desc": "改代码并验证"
+    },
+    "research": {
+      "base": 3,
+      "desc": "多源调研并产出报告"
+    },
+    "send_external": {
+      "base": 4,
+      "desc": "对外发消息/邮件",
+      "approval": true,
+      "irreversible": true,
+      "external": true
+    },
+    "publish": {
+      "base": 4,
+      "desc": "公开发布内容",
+      "approval": true,
+      "irreversible": true,
+      "external": true
+    },
+    "delete": {
+      "base": 4,
+      "desc": "删除数据/仓库外文件",
+      "approval": true,
+      "irreversible": true
+    },
+    "spend": {
+      "base": 3,
+      "desc": "产生费用",
+      "approval": true,
+      "irreversible": true
+    },
+    "deploy": {
+      "base": 4,
+      "desc": "部署/上线",
+      "approval": true,
+      "irreversible": true,
+      "external": true
+    }
   },
   "modifiers": {
-    "irreversible":      { "cap": 4, "reason": "不可逆动作封顶 L4" },
-    "external_visible":  { "cap": 4, "reason": "对外可见封顶 L4" },
-    "spend_over_cny":    { "threshold": 5, "cap": 3, "reason": "涉及金额超过 5 元封顶 L3" },
-    "low_confidence":    { "below": 0.6, "cap": 2, "reason": "判定置信度低时保守到 L2" }
+    "irreversible": {
+      "cap": 4,
+      "reason": "不可逆动作封顶 L4"
+    },
+    "external_visible": {
+      "cap": 4,
+      "reason": "对外可见封顶 L4"
+    },
+    "spend_over_cny": {
+      "threshold": 5,
+      "cap": 3,
+      "reason": "涉及金额超过 5 元封顶 L3"
+    },
+    "low_confidence": {
+      "below": 0.6,
+      "cap": 2,
+      "reason": "判定置信度低时保守到 L2"
+    }
   },
   "promotions": {
-    "proven_success_rate": { "rate": 0.85, "minSamples": 5, "bump": 1, "reason": "同类历史成功率高，上调一级" },
-    "approved_pattern":    { "bump": 1, "reason": "已有同型审批通过记录，上调一级" }
+    "proven_success_rate": {
+      "rate": 0.85,
+      "minSamples": 5,
+      "bump": 1,
+      "reason": "同类历史成功率高，上调一级"
+    },
+    "approved_pattern": {
+      "bump": 1,
+      "reason": "已有同型审批通过记录，上调一级"
+    }
   },
   "kind_defaults": {
-    "todo":         { "urgency": 3, "impact": 3 },
-    "issue":        { "urgency": 2, "impact": 3 },
-    "opportunity":  { "urgency": 2, "impact": 3 },
-    "decision":     { "urgency": 3, "impact": 4 },
-    "risk":         { "urgency": 4, "impact": 4 },
-    "fyi":          { "urgency": 1, "impact": 1 }
+    "todo": {
+      "urgency": 3,
+      "impact": 3
+    },
+    "issue": {
+      "urgency": 2,
+      "impact": 3
+    },
+    "opportunity": {
+      "urgency": 2,
+      "impact": 3
+    },
+    "decision": {
+      "urgency": 3,
+      "impact": 4
+    },
+    "risk": {
+      "urgency": 4,
+      "impact": 4
+    },
+    "fyi": {
+      "urgency": 1,
+      "impact": 1
+    }
   },
   "kind_alias": {
-    "email": "todo", "mail": "todo", "message": "todo",
-    "doc_change": "fyi", "doc": "fyi", "note": "fyi",
-    "git_wip": "issue", "git_commit": "fyi", "git_unpushed": "issue",
-    "pulse_failed": "risk", "pulse_duty_issue": "risk",
-    "pulse_memory": "fyi", "pulse_reports": "fyi", "pulse": "fyi",
-    "calendar": "todo", "event": "todo",
-    "self": "risk", "health": "risk",
-    "email_bounce": "fyi", "newsletter": "fyi"
+    "email": "todo",
+    "mail": "todo",
+    "message": "todo",
+    "doc_change": "fyi",
+    "doc": "fyi",
+    "note": "fyi",
+    "git_wip": "issue",
+    "git_commit": "fyi",
+    "git_unpushed": "issue",
+    "pulse_failed": "risk",
+    "pulse_duty_issue": "risk",
+    "pulse_memory": "fyi",
+    "pulse_reports": "fyi",
+    "pulse": "fyi",
+    "calendar": "todo",
+    "event": "todo",
+    "self": "risk",
+    "health": "risk",
+    "email_bounce": "fyi",
+    "newsletter": "fyi"
   },
   "noise_patterns": [
-    "退信", "邮件被退回", "PostMaster", "mailer-daemon", "no-reply", "noreply",
-    "Delivery Status Notification", "undeliverable", "退订", "unsubscribe"
+    "退信",
+    "邮件被退回",
+    "PostMaster",
+    "mailer-daemon",
+    "no-reply",
+    "noreply",
+    "Delivery Status Notification",
+    "undeliverable",
+    "退订",
+    "unsubscribe"
   ],
   "low_value_patterns": [
-    "uv.lock", "package-lock.json", "pnpm-lock.yaml", "yarn.lock",
-    "supervisor_gui_heartbeat", "sentinel_heartbeat", "heartbeat.json"
+    "uv.lock",
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+    "supervisor_gui_heartbeat",
+    "sentinel_heartbeat",
+    "heartbeat.json"
   ],
-  "side_effect_actions": ["send_external", "publish", "delete", "spend", "deploy"],
-  "write_allowlist_dirs": [
-    "D:\\hive\\data\\work",
-    "D:\\hive\\data\\artifacts",
-    "D:\\elohia\\reports",
-    "D:\\elohia\\output"
+  "side_effect_actions": [
+    "send_external",
+    "publish",
+    "delete",
+    "spend",
+    "deploy"
   ],
-  "never_touch": [
-    "D:\\elohia\\data\\raw",
-    "D:\\elohia\\data\\normalized",
-    "F:\\dsh-home\\.credentials.yaml",
-    "D:\\01-docment\\WeChat Files"
-  ],
+  "write_allowlist_dirs": [],
+  "never_touch": [],
   "priority": {
     "formula": "priority = impact*2.0 + urgency*1.5 + domainWeight + recencyBoost - effortPenalty",
     "domainWeight": {
-      "work": 0.6, "trade": 0.4, "startup": 0.8, "ai": 0.9,
-      "content": 0.5, "life": 0.3, "family": 0.5,
-      "ops": 0.7, "code": 0.8, "comms": 0.5, "_default": 0.4
+      "work": 0.6,
+      "trade": 0.4,
+      "startup": 0.8,
+      "ai": 0.9,
+      "content": 0.5,
+      "life": 0.3,
+      "family": 0.5,
+      "ops": 0.7,
+      "code": 0.8,
+      "comms": 0.5,
+      "_default": 0.4
     },
-    "recencyBoost": { "hours24": 0.8, "hours72": 0.4, "hours168": 0.0 },
-    "effortPenalty": { "L1": 0.0, "L2": 0.2, "L3": 0.5, "L4": 0.8, "L5": 1.0 }
+    "recencyBoost": {
+      "hours24": 0.8,
+      "hours72": 0.4,
+      "hours168": 0
+    },
+    "effortPenalty": {
+      "L1": 0,
+      "L2": 0.2,
+      "L3": 0.5,
+      "L4": 0.8,
+      "L5": 1
+    }
   }
 }

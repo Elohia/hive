@@ -24,12 +24,12 @@
 - **自检**：`/api/setup/doctor` 汇总 9 项核心检查 + 6 项依赖 CLI；缺失依赖可一键 `npm i -g`
   （固定白名单、180s 超时、不执行需交互登录的命令；Node 只检测不安装）。
 - **自测脚本**：`scripts/selftest-host.mjs`（假 ctx + 临时 `DSH_HOME`，19 项断言）；
-  `scripts/check-client.mjs`（`node:vm` 桩浏览器环境跑 `client.js`，68 项断言：槽位/图标/样式作用域/
+  `scripts/check-client.mjs`（`node:vm` 桩浏览器环境跑 `client.js`，70 项断言：槽位/图标/样式作用域/
   接口契约/归一化/依赖与版本 UI/不白屏/定时器回收）；`scripts/sync-runtime.mjs`（从独立版源码同步 `runtime/`）。
 - **对外材料**：README（中/英）、LICENSE（MIT）、CHANGELOG、`.gitignore`、GitHub Actions CI、
   `docs/INSTALL.md`、`docs/FEATURES.md`、`docs/ARCHITECTURE.md`。
 
-### Verified (本机实测，2026-11-05 · Windows 11 · Node v24.14.1)
+### Verified (本机实测，2026-11-05 · Windows 11 · 自测 Node v24.14.1 / 应用进程 v24.21.0)
 
 - `node --no-warnings scripts/selftest-host.mjs` → **19/19 PASS**
   - 开箱：config/ 与 data/ 建好、库建好、`seedPulses: 新增 12 条脉冲`
@@ -39,18 +39,32 @@
   - 工具：`hive_status, hive_capture, hive_run, hive_decide`
   - 卸载：引擎停、路由下线、global 清理
 - 独立看板 `node runtime/src/server/http.mjs --port 8899` → `/api/health` 200、`/` 200。
-- `node --no-warnings scripts/check-client.mjs` → **68/68 PASS**（834ms）。
+- `node --no-warnings scripts/check-client.mjs` → **70/70 PASS**（约 0.9s）。
+
+**装进真实 profile 之后（desktop，`link:D:/hive/dsh-plugin-hive`，只读探针）**
+
+- `/hive/api/plugin/status` 200：`phase=ready`、引擎 running、已扫入 28 条事项、12 条脉冲、
+  借用模型 `deepseek-official/deepseek-flash`。
+- `/hive/` 200（14522 B、9 个页签）、`X-Frame-Options=SAMEORIGIN`、CSP 含 `frame-ancestors 'self'`。
+- `/hive/api/plugin/doctor` 5/5 PASS；`/hive/api/setup/doctor` WARN（13 PASS / 2 WARN / 0 FAIL，
+  15 项 = 9 核心 + 6 依赖；两个 WARN 为 `proc` 未配 command 与「守护进程未运行」）。
+- `/hive/api/deps` 200（6/6 依赖就绪）、`/hive/api/agents` 6/7 可用、`/hive/api/plugin/version` 200、
+  `/hive/api/autopilots` 12 条、`/hive/api/cost` 200。
 
 ### Known issues
 
 - 插件模式下成本恒记 0（模型走宿主），因此日预算护栏不触发；见 README「已知限制」1。
+- 自动任务页签的「守护进程」看的是独立版 `data/hive.lock`；插件引擎在 DSH 进程内、不写该锁，
+  所以插件模式会显示「未运行」（自检里 1 条 `daemon=WARN` 同源）。以控制条状态点为准。
 - `runtime/` 是 `sync-runtime.mjs` 的拷贝：改了源码仓库不重跑同步，插件里仍是旧运行时（看板页签/自检/依赖接口都会落后）。
 - 「Agent 依赖」「版本」的落地动作依赖宿主 `ctx.pluginManager`；宿主没提供时如实报「宿主没有提供 pluginManager」，
-  用 `link:` 安装时「版本」会提示需改成 GitHub / registry 安装。仅影响这两个抽屉页。
-- `codex`（402 上游余额）、`claude`（401 凭据失效）为作者机器实测现象，换机器不一定复现。
+  用 `link:` 安装时「版本」会提示需改成 GitHub / registry 安装。仓库未发布时 `latest=null`，不编版本号。
+- `codex`（曾 402 上游余额）、`claude`（曾 401 凭据失效）为作者机器跑任务时的实测现象，二进制本身探活 PASS，
+  换机器不一定复现。`proc` 执行器需显式配置 command 才可用（预期）。
 - 默认 `policies.json` / `hive.json` 内是作者本机绝对路径，换机器需手工改。
 - 同一 `HIVE_HOME` 不可同时跑插件引擎与独立版 daemon。
-- 真实 profile 的 GUI 安装未做端到端记录（已验的是两侧自测与独立看板）。
+- 路径 B（`github:` / npm）未验证：仓库尚未发布。
+- GUI 逐屏外观（图标、抽屉动画）无截图记录；接口与两侧自测已验证。
 
 ### Notes
 

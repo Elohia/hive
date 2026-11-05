@@ -7,7 +7,7 @@
 //
 // 本机实测（2026-11）：config.sources.git.repos 里 6 个路径**只有 D:\evo 是仓库根**，
 // 其余是"项目父目录"。因此对非仓库路径做**有界嵌套发现**（深度≤3，跳过 node_modules 等），
-// 找到 D:\elohia\.dsh\skills\author-voice-distill、D:\pi-agent\deploy\*、D:\00-fish\MiroFish。
+// 找到 C:/HIVE-SAMPLE/workspace\.dsh\skills\author-voice-distill、C:/HIVE-SAMPLE/automations\deploy\*、C:/HIVE-SAMPLE/misc\MiroFish。
 // 发现到的仓库在 meta.discovered=true 里标注，可关（cfg.sources.git.discover=false）。
 //
 // 只读保障：所有 git 调用都带 GIT_OPTIONAL_LOCKS=0（避免 status 写 index.lock），

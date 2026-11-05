@@ -73,6 +73,8 @@
 
 ### 2.7 自动任务 autopilots
 - **看到**：12 条脉冲的时间表（周期 / 上次运行 / 下次运行 / 是否已到期 / 上次状态），KPI：脉冲总数、到期未跑、上次失败数、守护进程状态。
+  > 插件模式下「守护进程」会显示**未运行**：它读的是独立版 daemon 的锁文件 `data/hive.lock`，而插件把引擎跑在 DSH 进程内、不写这个锁。
+  > 真实引擎状态看控制条的状态点（那一路是 `/hive/api/plugin/status`）。
 - **能做**：逐条启用/暂停；**立即执行**（只代跑 scan / triage / watchdog —— 晨报、上下文刷新、定时自检依赖守护进程上下文与 LLM，Web 端不代跑，避免重复计费与重复推送）；启动/停止守护进程。
 - **接口**：`GET /api/autopilots`、`POST /api/autopilots/:id/toggle`、`POST /api/autopilots/:id/run`。
 

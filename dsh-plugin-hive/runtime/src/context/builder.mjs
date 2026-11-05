@@ -163,12 +163,12 @@ export function renderContext() {
 export function seedBaselineFacts() {
   const cfg = loadConfig();
   const seeds = [
-    ['role', 'role', '土木工程（工地/机电）为主业，同时做 AI Agent 工程、量化交易与内容创作', 'D:\\elohia\\docs\\WORLDVIEW.md'],
-    ['constraint', 'time', '时间稀缺：有家庭责任与主业，能投入副业的时间碎片化', 'D:\\elohia\\AGENTS.md'],
-    ['preference', 'communication', '中文交流；结论先行；厌恶空话与恭维；要求「对就是对，错就是错」', 'F:\\dsh-home\\AGENTS.md'],
-    ['preference', 'decision_style', '谋而后动、后发先至；大计划常以「要不…」试探后停在口头（历史兑现率低）', 'D:\\elohia\\reports\\P8-未竟之事v0.md'],
-    ['interest', 'tech', 'Agent 架构 / 记忆系统 / 工具链编排 / 可复用积木', 'D:\\elohia\\docs\\WORLDVIEW.md'],
-    ['interest', 'trade', 'A股量化、趋势交易、盘面与题材', 'D:\\pi-agent'],
+    ['role', 'role', '土木工程（工地/机电）为主业，同时做 AI Agent 工程、量化交易与内容创作', 'C:/HIVE-SAMPLE/workspace\\docs\\WORLDVIEW.md'],
+    ['constraint', 'time', '时间稀缺：有家庭责任与主业，能投入副业的时间碎片化', 'C:/HIVE-SAMPLE/workspace\\AGENTS.md'],
+    ['preference', 'communication', '中文交流；结论先行；厌恶空话与恭维；要求「对就是对，错就是错」', 'C:/HIVE-SAMPLE/dsh-home\\AGENTS.md'],
+    ['preference', 'decision_style', '谋而后动、后发先至；大计划常以「要不…」试探后停在口头（历史兑现率低）', 'C:/HIVE-SAMPLE/workspace\\reports\\P8-未竟之事v0.md'],
+    ['interest', 'tech', 'Agent 架构 / 记忆系统 / 工具链编排 / 可复用积木', 'C:/HIVE-SAMPLE/workspace\\docs\\WORLDVIEW.md'],
+    ['interest', 'trade', 'A股量化、趋势交易、盘面与题材', 'C:/HIVE-SAMPLE/automations'],
   ];
   let n = 0;
   for (const [cat, key, val, ev] of seeds) {

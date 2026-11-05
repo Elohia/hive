@@ -1360,7 +1360,11 @@ function renderDeps(d) {
 
   const rows = deps.map((x) => {
     const busy = state.depsBusy === x.id;
-    const lower = (x.versions || []).filter((v) => x.version && cmpVer(v, x.version) < 0);
+    // 优先用后端算好的「比当前更低」的版本（契约字段 versions 只有最近 20 个，
+    // 当前版本较旧时最近 20 个可能全都更高，那样降级列表会是空的）
+    const lower = (Array.isArray(x.downgradeVersions) && x.downgradeVersions.length
+      ? x.downgradeVersions
+      : (x.versions || []).filter((v) => x.version && cmpVer(v, x.version) < 0));
     const open = state.depsOpen === x.id;
     const btn = (act, label, cls, extra = '') => `<button class="btn sm ${cls}" data-deps-act="${act}" data-dep="${esc(x.id)}" ${extra} ${busy ? 'disabled' : ''}>${label}</button>`;
     const actions = [];
@@ -1383,7 +1387,7 @@ function renderDeps(d) {
       <td>${depStatusChip(x)}</td>
       <td><div class="dash-actions">${actions.join('')}${busy ? '<span class="dim small">处理中…</span>' : ''}</div></td>
     </tr>${open ? `<tr class="dep-vers-row"><td colspan="5">
-      <div class="dash-note">当前 ${esc(x.version || '—')}；下面只列比当前更低的版本（取自最近 20 个）：</div>
+      <div class="dash-note">当前 ${esc(x.version || '—')}；下面只列比当前更低的版本（最多 20 个）：</div>
       <div class="dash-actions" style="margin-top:6px">
         ${lower.map((v) => `<button class="btn sm" data-deps-act="pick" data-dep="${esc(x.id)}" data-version="${esc(v)}" ${busy ? 'disabled' : ''}>装 ${esc(v)}</button>`).join('')
           || '<span class="dim small">最近 20 个版本里没有比当前更低的</span>'}

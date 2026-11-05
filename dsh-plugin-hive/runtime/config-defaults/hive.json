@@ -1,7 +1,7 @@
 {
   "$schema": "hive-config-v1",
   "version": "0.1.0",
-  "home": "D:\\hive",
+  "home": "",
   "server": {
     "host": "127.0.0.1",
     "port": 8787,
@@ -17,14 +17,8 @@
     "prompts": "prompts"
   },
   "credentials": {
-    "file": "F:\\dsh-home\\.credentials.yaml",
-    "keys": {
-      "deepseek": "DEEPSEEK_API_KEY",
-      "glm": "GO_GLM_API_KEY",
-      "qwen": "QWEN_TOKEN_PLAN_API_KEY",
-      "agnes": "AGNES_AI_API_KEY",
-      "xiaomi": "XIAOMI_API_KEY"
-    }
+    "file": "",
+    "keys": {}
   },
   "llm": {
     "default": "deepseek",
@@ -190,7 +184,7 @@
   },
   "sources": {
     "mail": {
-      "enabled": true,
+      "enabled": false,
       "intervalSec": 900,
       "command": "agently-cli",
       "limit": 12,
@@ -201,25 +195,13 @@
     "git": {
       "enabled": true,
       "intervalSec": 1800,
-      "repos": [
-        "D:\\hive",
-        "D:\\elohia",
-        "D:\\pi-agent",
-        "D:\\evo",
-        "D:\\00-fish",
-        "D:\\001-blander"
-      ],
+      "repos": [],
       "lookbackHours": 48
     },
     "docs": {
       "enabled": true,
       "intervalSec": 3600,
-      "roots": [
-        "D:\\elohia\\reports",
-        "D:\\pi-agent\\reports",
-        "D:\\hive\\docs",
-        "D:\\elohia\\docs"
-      ],
+      "roots": [],
       "lookbackHours": 72,
       "exts": [
         ".md",
@@ -232,7 +214,7 @@
       "enabled": true,
       "intervalSec": 3600,
       "icsPaths": [
-        "data\\calendar\\*.ics"
+        "data/calendar/*.ics"
       ],
       "lookaheadHours": 72
     },
@@ -244,7 +226,7 @@
     "wechat": {
       "enabled": false,
       "intervalSec": 1800,
-      "note": "依赖 D:\\elohia 的 wcdb 桥；默认关闭（隐私）"
+      "note": "依赖 C:/HIVE-SAMPLE/workspace 的 wcdb 桥；默认关闭（隐私）"
     },
     "pulses_local": {
       "enabled": true,

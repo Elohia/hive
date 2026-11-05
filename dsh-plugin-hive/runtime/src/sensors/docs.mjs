@@ -4,7 +4,7 @@
 // 做法：扫 config.sources.docs.roots，取 lookbackHours 内变更的文本文件，按 mtime 倒序。
 //
 // 降噪（本机实测必要）：
-//   D:\pi-agent\reports 有 3871 个文件，其中 data\*.json 是机器产物（行情/心跳），
+//   C:/HIVE-SAMPLE/automations\reports 有 3871 个文件，其中 data\*.json 是机器产物（行情/心跳），
 //   若不过滤会在 72h 窗口里刷出上百条噪声。因此：
 //     - 跳过 data/logs/tmp 之类目录（DEFAULT_SKIP_DIRS + 额外 NOISE_DIRS）
 //     - 跳过心跳/状态/清单/锁这类机器文件名

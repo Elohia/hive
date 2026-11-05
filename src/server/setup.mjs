@@ -764,9 +764,9 @@ function persistMeta() {
     const byPkg = {};
     for (const [pkg, e] of _meta.byPkg) {
       if (!e || !e.value || !e.value.ok) continue;
-      // 全量版本表不进 kv（codex 有 5700+ 个版本）：只留前 400 个，够降级用
-      const v = e.value;
-      byPkg[pkg] = { ...v, versionsFull: Array.isArray(v.versionsFull) ? v.versionsFull.slice(0, 400) : [] };
+      // 全量版本表进 kv（codex 有 5700+ 个版本，约 100KB）：降级列表需要一个
+      // 「比当前版本低」的真实集合，只留前 N 个会让老版本的包降级不了。
+      byPkg[pkg] = v;
     }
     if (!Object.keys(byPkg).length && !_meta.primaryFailedAt) return;
     kvSet(KV_META_KEY, {
@@ -888,7 +888,10 @@ export async function depsSnapshot({ force = false } = {}) {
       // 降级用：比当前版本更低的最多 20 个（契约字段 versions 只放最近 20 个，
       // 对「当前版本较旧」的情况，最近 20 个可能全都更高，所以单独给一份）
       downgradeVersions: version
-        ? allVersions.filter((v) => compareVersions(v, version) < 0).slice(0, 20)
+        ? allVersions
+          .filter((v) => !/-(win32|darwin|linux|android|freebsd|alpine)-/i.test(v)) // 平台专用构件包（如 codex 的 win32-x64）不是 CLI 本体的可降级版本
+          .filter((v) => compareVersions(v, version) < 0)
+          .slice(0, 20)
         : [],
       totalVersions: meta.totalVersions || 0,
       distTags: meta.distTags || {},

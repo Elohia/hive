@@ -1,11 +1,11 @@
 // src/sensors/pulses_local.mjs — 本机既有自动化的"进展信号"（只读）
 //
 // 不重写任何既有自动化，只读它们的产物来判断"昨夜跑了什么 / 有没有失败"：
-//   D:\pi-agent\automations\*.memory.md          —— 各自动化的执行记忆（成果/经验/改进）
-//   D:\pi-agent\automations\memory\*.md          —— 精简摘要
-//   D:\pi-agent\reports\*                        —— 最新报告产出（判断产出是否停滞）
-//   F:\dsh-home\{x-duty,bili-duty,xhs-duty}\state.json —— 值守状态（含投递是否失败）
-//   F:\dsh-home\{x-duty,bili-duty,xhs-duty}\seen.md    —— 判重表（收录条数）
+//   C:/HIVE-SAMPLE/automations\automations\*.memory.md          —— 各自动化的执行记忆（成果/经验/改进）
+//   C:/HIVE-SAMPLE/automations\automations\memory\*.md          —— 精简摘要
+//   C:/HIVE-SAMPLE/automations\reports\*                        —— 最新报告产出（判断产出是否停滞）
+//   C:/HIVE-SAMPLE/dsh-home\{x-duty,bili-duty,xhs-duty}\state.json —— 值守状态（含投递是否失败）
+//   C:/HIVE-SAMPLE/dsh-home\{x-duty,bili-duty,xhs-duty}\seen.md    —— 判重表（收录条数）
 //
 // 路径可用 cfg.sources.pulses_local.{automationsDir,reportsDir,dutyDirs} 覆盖（不写死）。
 import fs from 'node:fs';
@@ -18,9 +18,9 @@ import {
 const NAME = 'pulses_local';
 
 const DEFAULTS = {
-  automationsDir: 'D:\\pi-agent\\automations',
-  reportsDir: 'D:\\pi-agent\\reports',
-  dutyDirs: ['F:\\dsh-home\\x-duty', 'F:\\dsh-home\\bili-duty', 'F:\\dsh-home\\xhs-duty'],
+  automationsDir: 'C:/HIVE-SAMPLE/automations\\automations',
+  reportsDir: 'C:/HIVE-SAMPLE/automations\\reports',
+  dutyDirs: ['C:/HIVE-SAMPLE/dsh-home\\x-duty', 'C:/HIVE-SAMPLE/dsh-home\\bili-duty', 'C:/HIVE-SAMPLE/dsh-home\\xhs-duty'],
 };
 
 const FAIL_RE = /失败|报错|异常|error|failed|timeout|超时|中断|拒绝|denied/i;

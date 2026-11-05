@@ -12,9 +12,9 @@ const read = (p, max = 4000) => {
 
 const EXTERNAL_SOURCES = [
   // [类别, 路径, 截断, 说明]
-  ['worldview', 'D:\\elohia\\docs\\WORLDVIEW.md', 2500, '内核档案（世界观/决策规则）'],
-  ['persona', 'D:\\elohia\\reports\\P1-人格画像v3-我是谁.md', 1800, '人格画像 v3'],
-  ['projects', 'D:\\pi-agent\\AGENTS.md', 1200, 'pi-agent 项目约定'],
+  ['worldview', 'C:/HIVE-SAMPLE/workspace\\docs\\WORLDVIEW.md', 2500, '内核档案（世界观/决策规则）'],
+  ['persona', 'C:/HIVE-SAMPLE/workspace\\reports\\P1-人格画像v3-我是谁.md', 1800, '人格画像 v3'],
+  ['projects', 'C:/HIVE-SAMPLE/automations\\AGENTS.md', 1200, 'pi-agent 项目约定'],
   ['projects', 'D:\\hive\\AGENTS.md', 900, '本系统约定'],
 ];
 

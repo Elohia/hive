@@ -4,7 +4,7 @@
 # 这里刻意只选 ubuntu-latest + Node 24 跑与平台无关的四件事：
 #   1) 全部入口/脚本的 `node --check`（不执行、不联网）
 #   2) `scripts/selftest-host.mjs`（假 ctx + 临时 DSH_HOME，19 项断言）
-#   3) `scripts/check-client.mjs`（node:vm 桩浏览器环境，68 项断言）
+#   3) `scripts/check-client.mjs`（node:vm 桩浏览器环境，70 项断言）
 #   4) 独立看板冒烟（临时 HIVE_HOME 起服务，探 /api/health 与 /）
 # 首次推送到 GitHub 后请按实际结果调整（例如某个传感器在新 runner 上超时），不要盲目信任本文件。
 name: CI
@@ -61,7 +61,7 @@ jobs:
       - name: Host self-test (19 assertions, fake ctx)
         run: node --no-warnings scripts/selftest-host.mjs
 
-      - name: Client self-test (68 assertions, vm stub)
+      - name: Client self-test (70 assertions, vm stub)
         run: node --no-warnings scripts/check-client.mjs
 
       # 不装 DSH 也能起看板：临时 HIVE_HOME + 临时端口

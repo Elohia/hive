@@ -5,6 +5,8 @@
 // 两边共用同一个 runtime/（src 的拷贝）与同一张表，语义等价；差异只在驱动方式。
 //
 // 契约：createEngine({ log, emit }) → { start, stop, trigger, status, lastError }
+import fs from 'node:fs';
+import path from 'node:path';
 import * as pulseMod from './runtime/src/task/pulse.mjs';
 import * as watchdog from './runtime/src/task/watchdog.mjs';
 import * as router from './runtime/src/task/router.mjs';
@@ -14,6 +16,25 @@ import { loadConfig } from './runtime/src/core/config.mjs';
 import { cursorGet, cursorSet, q } from './runtime/src/core/db.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** 与 CLI 守护进程同格式的锁文件：让看板「自动任务」页的守护进程 KPI 在插件模式下也显示正确 */
+function lockPath() {
+  return path.join(process.env.HIVE_HOME || process.cwd(), 'data', 'hive.lock');
+}
+function writeLock() {
+  try {
+    const p = lockPath();
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString(), argv: ['plugin-engine'] }), 'utf8');
+  } catch { /* 锁只是展示用途，失败不影响运行 */ }
+}
+function clearLock() {
+  try {
+    const p = lockPath();
+    const cur = JSON.parse(fs.readFileSync(p, 'utf8'));
+    if (cur?.pid === process.pid) fs.unlinkSync(p);
+  } catch { /* noop */ }
+}
 
 export function createEngine({ log = () => {}, onEvent = () => {} } = {}) {
   let sensors = null;
@@ -190,6 +211,7 @@ export function createEngine({ log = () => {}, onEvent = () => {} } = {}) {
       pulseMod.seedPulses();
       try { watchdog.recover(); } catch (e) { log('warn', `recover: ${e.message}`); }
       running = true;
+      writeLock();
       startedAt = new Date().toISOString();
       lastWatchdog = 0; lastBeat = 0;
       // 立刻跑一轮扫描，让新用户装完就有内容
@@ -201,6 +223,7 @@ export function createEngine({ log = () => {}, onEvent = () => {} } = {}) {
     },
     async stop() {
       running = false;
+      clearLock();
       if (timer) { clearInterval(timer); timer = null; }
       emit('engine.stop', '调度引擎已停止');
       return { running: false };
@@ -234,3 +257,4 @@ export function createEngine({ log = () => {}, onEvent = () => {} } = {}) {
     get isRunning() { return running; },
   };
 }
+

@@ -13,7 +13,7 @@ a full task-center dashboard.
 | Requires | DSH profile with `webServer` + `llm` + `tools` · Node ≥ 22.5 (`node:sqlite` is built in) |
 | npm dependencies | **none** — Node built-ins only; dashboard has zero CDN |
 | Data | `$DSH_HOME/hive/` (single local SQLite database) |
-| Verified locally | host half **19/19 PASS** · client half **68/68 PASS** · standalone dashboard `/api/health` 200 |
+| Verified locally | host half **19/19 PASS** · client half **70/70 PASS** · standalone dashboard `/api/health` 200 |
 
 ---
 
@@ -118,18 +118,33 @@ Details, uninstall and migration: [docs/INSTALL.md](docs/INSTALL.md).
 cd dsh-plugin-hive
 node --check index.js && node --check client.js && node --check engine.mjs && node --check version.mjs
 node --no-warnings scripts/selftest-host.mjs          # 19 assertions, fake ctx, temporary DSH_HOME
-node --no-warnings scripts/check-client.mjs           # 68 assertions, node:vm browser stub
+node --no-warnings scripts/check-client.mjs           # 70 assertions, node:vm browser stub
 # optional: standalone dashboard
 $h="$env:TEMP\hive-demo"; New-Item -ItemType Directory -Force "$h\config" | Out-Null;
 Copy-Item runtime\config-defaults\*.json "$h\config\"; $env:HIVE_HOME=$h;
 node --no-warnings runtime/src/server/http.mjs --port 8899   # open http://127.0.0.1:8899/
 ```
 
-Local run (2026-11-05, Windows 11, Node v24.14.1): host **19/19 PASS** — provisioning created config/data and
-seeded 12 pulses, host model resolved to `deepseek/deepseek-chat`, `/hive` registered as a prefix route with
-`SAMEORIGIN`, a real scan saw 29 items and created 28, four tools registered, unload was clean. Client
-**68/68 PASS** — slot registration, icon, scoped styles, endpoint contract, deps/version UI, no-blank-screen
-fallbacks. The standalone dashboard answered `/api/health` 200.
+Local run (2026-11-05, Windows 11, Node v24.14.1 for the tests · v24.21.0 inside the DSH process):
+host **19/19 PASS** — provisioning created config/data and seeded 12 pulses, `/hive` registered as a prefix
+route with `SAMEORIGIN`, a real scan saw 29 items and created 28, four tools registered, unload was clean.
+Client **70/70 PASS** — slot registration, icon, scoped styles, endpoint contract, deps/version UI,
+no-blank-screen fallbacks.
+
+**After a real `link:` install into the desktop profile** (read-only live probes):
+
+| Check | Result |
+|---|---|
+| Plugin status | `GET /hive/api/plugin/status` 200 — `phase=ready`, engine running, 28 items, 12 pulses |
+| Model | resolved to `deepseek-official/deepseek-flash` (follows your DSH selection) |
+| Dashboard | `GET /hive/` 200 (14522 B, 9 tabs), `X-Frame-Options=SAMEORIGIN`, `frame-ancestors 'self'` |
+| Plugin doctor | `GET /hive/api/plugin/doctor` — 5/5 PASS |
+| Full doctor | `GET /hive/api/setup/doctor` — WARN (13 PASS / 2 WARN / 0 FAIL, 15 items = 9 core + 6 deps) |
+| Agent deps | `GET /hive/api/deps` 200; all 6 dependencies present |
+| Executors | `GET /hive/api/agents` — 6/7 available (`proc` needs an explicit command) |
+| Version | `GET /hive/api/plugin/version` 200; `latest=null` while the repo is unpublished (reported honestly) |
+
+The standalone dashboard also answered `/api/health` 200.
 
 ---
 
@@ -137,22 +152,26 @@ fallbacks. The standalone dashboard answered `/api/health` 200.
 
 1. **Cost reads ¥0.00 in plugin mode** — model calls go through the host, HIVE neither re-bills nor invents tokens.
    Consequence: the daily budget guard never trips in plugin mode. Check DSH's own usage for real spend.
-2. `codex` (HTTP 402, upstream balance) and `claude` (HTTP 401, expired credentials) were unavailable on the author's
-   machine; this may not reproduce elsewhere. `probe()` only checks binaries and versions.
-3. L4/L5 "self-verification" means artifacts on disk plus auditability — there is no independent second verifier.
-4. Toast notifications only work on Windows 10/11 (WinRT via PowerShell 5.1); elsewhere they fail soft and the
+2. **The Autopilots tab reports "daemon not running" in plugin mode** — it reads the standalone daemon lock file
+   (`data/hive.lock`), which the in-process engine never writes. Trust the status dot in the control bar
+   (that one reflects the real engine). This is also the `daemon=WARN` row in the doctor.
+3. **`proc` being unavailable is expected** — it is a generic fallback and stays disabled without an explicit
+   `executors.proc.command`.
+4. `codex` (HTTP 402, upstream balance) and `claude` (HTTP 401, expired credentials) failed on real task runs on the
+   author's machine, even though both binaries are installed and probe PASS. `probe()` only checks binaries and versions.
+5. L4/L5 "self-verification" means artifacts on disk plus auditability — there is no independent second verifier.
+6. Toast notifications only work on Windows 10/11 (WinRT via PowerShell 5.1); elsewhere they fail soft and the
    information still lands in the dashboard events / Outbox.
-5. Default `policies.json` / `hive.json` contain absolute paths from the author's machine (`D:\…`, `F:\…`);
+7. Default `policies.json` / `hive.json` contain absolute paths from the author's machine (`D:\…`, `F:\…`);
    change `$DSH_HOME/hive/config/*.json` after moving machines.
-6. Do not run the plugin engine and the standalone `hive daemon` against the same `HIVE_HOME` — no cross-process coordination.
-7. **`runtime/` is a synced copy, not the source** — it is produced by `node scripts/sync-runtime.mjs`; edit the
+8. Do not run the plugin engine and the standalone `hive daemon` against the same `HIVE_HOME` — no cross-process coordination.
+9. **`runtime/` is a synced copy, not the source** — it is produced by `node scripts/sync-runtime.mjs`; edit the
    source repo without re-syncing and the plugin keeps running the old runtime.
-8. **Agent deps / Version drawer actions depend on host capabilities** — the dependency list comes from
-   `/hive/api/deps` (an unsynced runtime shows "endpoint not ready"), and install/update/downgrade/uninstall go
-   through the host's `ctx.pluginManager`; when missing it says so instead of failing silently. With a `link:`
-   install, the Version drawer tells you that upgrading requires a GitHub/registry install.
-9. The steps in this README were validated for both halves with stubs (19 + 68 assertions) and for the standalone
-   dashboard; the real profile install was not recorded end-to-end on the author's machine.
+10. **Agent deps / Version drawer actions depend on host capabilities** — the list comes from `/hive/api/deps` and
+    install/update/downgrade/uninstall go through the host's `ctx.pluginManager`; when missing it says so instead of
+    failing silently. With a `link:` install, the Version drawer says upgrading requires a GitHub/registry install.
+11. **Verification boundary** — the install and the HTTP endpoints were verified with read-only probes against a real
+    profile; the GUI was not recorded screen by screen (visual appearance only).
 
 ---
 
