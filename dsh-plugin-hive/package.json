@@ -14,13 +14,19 @@
   "files": [
     "index.js",
     "client.js",
+    "engine.mjs",
+    "version.mjs",
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",
     "runtime/**",
     "scripts/sync-runtime.mjs",
+    "scripts/selftest-host.mjs",
+    "scripts/check-client.mjs",
+    "docs/**",
     "README.md",
     "README.en.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "dsh": {

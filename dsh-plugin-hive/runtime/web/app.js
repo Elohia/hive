@@ -153,6 +153,22 @@ const state = {
   context: null,
   details: new Map(),
   notes: new Map(),
+  // ── 仪表盘：执行器 / 自动任务 / 成本 / 自检 ──
+  agents: null,
+  agentsAt: 0,
+  autopilots: null,
+  autopilotsAt: 0,
+  cost: null,
+  costAt: 0,
+  costDays: 7,
+  setup: null,
+  setupAt: 0,
+  installResult: null,
+  deps: null,
+  depsAt: 0,
+  depsBusy: null,
+  depsOpen: null,
+  depsResult: null,
   deciding: new Map(),
   editingFact: null,
   busy: new Set(),
@@ -789,6 +805,657 @@ async function loadContext() {
   }
 }
 
+// ═════════════════════ 仪表盘：执行器 / 自动任务 / 成本 / 自检 ═════════════════════
+// 全部数据来自本地 /api/*；图表只用 inline SVG / CSS（零图表库、零 CDN）。
+
+const isFresh = (at, ttl) => !!at && Date.now() - at < ttl;
+
+function kpiCard(label, value, sub, tone) {
+  return `<div class="kpi ${tone || ''}">
+    <span class="kpi-label">${esc(label)}</span>
+    <span class="kpi-value">${value}</span>
+    ${sub ? `<span class="kpi-sub">${esc(sub)}</span>` : ''}
+  </div>`;
+}
+
+function durationText(ms) {
+  const v = Number(ms);
+  if (ms == null || !Number.isFinite(v)) return '—';
+  if (v < 1000) return Math.round(v) + 'ms';
+  if (v < 60000) return (v / 1000).toFixed(1) + 's';
+  return Math.round(v / 60000) + 'm';
+}
+
+function statusPill(status) {
+  const s = ['PASS', 'WARN', 'FAIL'].includes(status) ? status : 'WARN';
+  return `<span class="st-pill ${s}">${s}</span>`;
+}
+
+/** 每日花费柱状图：inline SVG（无任何图表库） */
+function dailyCostSvg(byDay) {
+  const data = Array.isArray(byDay) ? byDay : [];
+  if (!data.length) return '<div class="dash-empty">没有可画的数据</div>';
+  const W = 760, H = 160, padL = 10, padR = 10, padB = 24, padT = 18;
+  const n = data.length;
+  const gap = n > 20 ? 2 : 6;
+  const bw = Math.max(2, (W - padL - padR - gap * (n - 1)) / n);
+  const max = Math.max(0.0001, ...data.map((d) => Number(d.costCny) || 0));
+  const plotH = H - padT - padB;
+  const every = Math.max(1, Math.ceil(n / 10));
+  const bars = data.map((d, i) => {
+    const v = Number(d.costCny) || 0;
+    const h = v > 0 ? Math.max(2, Math.round((v / max) * plotH)) : 1;
+    const x = padL + i * (bw + gap);
+    const y = padT + (plotH - h);
+    const showLabel = n <= 10 || i === 0 || i === n - 1 || i % every === 0;
+    return `<g>
+      <rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${h}" rx="2" fill="${v > 0 ? 'url(#hiveCostGrad)' : '#1b2836'}"></rect>
+      <title>${esc(d.date)} · ¥${v.toFixed(4)} · ${d.runs} 次运行 · ${d.tokens || 0} tokens</title>
+      ${showLabel ? `<text class="svg-label" x="${(x + bw / 2).toFixed(1)}" y="${H - 8}" text-anchor="middle">${esc(d.label || '')}</text>` : ''}
+    </g>`;
+  }).join('');
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="每日花费柱状图">
+    <defs><linearGradient id="hiveCostGrad" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0%" stop-color="#2f6f9f"></stop>
+      <stop offset="100%" stop-color="#f5b942"></stop>
+    </linearGradient></defs>
+    <line class="grid-line" x1="${padL}" y1="${(padT + plotH).toFixed(1)}" x2="${W - padR}" y2="${(padT + plotH).toFixed(1)}"></line>
+    <text class="chart-title" x="${padL}" y="${padT - 5}">峰值 ¥${max.toFixed(4)} · 单位：元</text>
+    ${bars}
+  </svg>`;
+}
+
+// ── 执行器 ────────────────────────────────────────────────────────
+async function loadAgents(force = false) {
+  const body = $('#agents-body');
+  if (!body) return;
+  if (!force && isFresh(state.agentsAt, 20000) && state.agents) { renderAgents(state.agents); return; }
+  try {
+    const d = await api('/api/agents');
+    state.agents = d;
+    state.agentsAt = Date.now();
+    setOnline(true);
+    renderAgents(d);
+  } catch (e) {
+    setOnline(false);
+    if (state.agents) { toast('执行器刷新失败：' + e.message, 'err'); renderAgents(state.agents); }
+    else body.innerHTML = errorCard('执行器数据加载失败', e);
+  }
+}
+
+function renderAgents(d) {
+  const body = $('#agents-body');
+  const s = d.summary || {};
+  const daemon = d.daemon || {};
+  const execs = d.executors || [];
+  const head = `<div class="kpis">
+    ${kpiCard('可用执行器', `${s.available ?? 0} <span class="dim small">/ ${s.executors ?? 0}</span>`, 'probe() 实测（不是配置声明）', (s.available ?? 0) > 0 ? 'good' : 'bad')}
+    ${kpiCard('24h 运行', String(s.runs24h ?? 0), `成功 ${s.ok24h ?? 0} · 失败 ${s.failed24h ?? 0}`)}
+    ${kpiCard('24h 花费', fmt.money(s.costCny24h), `累计 ${fmt.money(s.costCnyAll)}`)}
+    ${kpiCard('平均耗时', durationText(s.avgDurationMs), '仅统计已结束的运行')}
+    ${kpiCard('守护进程', daemon.running ? '运行中' : '未运行', daemon.running ? `pid ${daemon.pid}` : '巡检/派发不会跑', daemon.running ? 'good' : 'warn')}
+  </div>`;
+  if (!execs.length) {
+    body.innerHTML = `<div class="dash">${head}<div class="dash-card"><div class="dash-body">${errorCard('执行器注册表为空', { message: d.reason || 'probe() 没有返回任何执行器' })}</div></div></div>`;
+    return;
+  }
+  const rows = execs.map((e) => `<tr class="${e.ok ? '' : 'row-dim'}">
+    <td><b>${esc(e.name)}</b><div class="dim small mono">${esc(e.kind || '—')}</div></td>
+    <td>${e.ok
+      ? '<span class="ok-yes"><i class="dot-inline ok"></i>可用</span>'
+      : '<span class="ok-no"><i class="dot-inline bad"></i>不可用</span>'}${e.enabled ? '' : '<span class="chip muted" style="margin-left:6px">已禁用</span>'}</td>
+    <td class="mono small">${esc(e.version || '—')}${e.ok ? '' : `<div class="dim" title="${esc(e.reason || '')}">${esc(truncate(e.reason || '', 52))}</div>`}</td>
+    <td class="num">${e.runs24h.total}</td>
+    <td class="num"><span class="ok-yes">${e.runs24h.ok}</span> / <span class="ok-no">${e.runs24h.failed}</span></td>
+    <td class="num">${e.successRate != null ? Math.round(e.successRate * 100) + '%' : '—'}</td>
+    <td class="num">${durationText(e.avgDurationMs)}</td>
+    <td class="num">${fmt.money(e.costCny)}<div class="dim small">累计 ${fmt.money(e.lifetime.costCny)}</div></td>
+    <td class="num dim small">${e.lastRunAt ? fmt.ago(e.lastRunAt) : '—'}</td>
+  </tr>`).join('');
+  const runtimes = (d.runtimes || []).map((r) => `<span class="chip muted" title="${esc(r.reason || '运行时')}">${esc(r.name)} ${r.ok ? '✓' : '✗'} ${esc(r.version || '')}</span>`).join(' ');
+  body.innerHTML = `<div class="dash">${head}
+    <div class="dash-card">
+      <h3>执行器（L1–L5 派单的落点）<span class="spacer"></span><span class="dash-note">运行时：${runtimes || '—'}</span></h3>
+      <div class="dash-scroll"><table class="dash-table">
+        <thead><tr>
+          <th>名称 / 类型</th><th>状态</th><th>版本 / 不可用原因</th>
+          <th class="num">24h 运行</th><th class="num">成功/失败</th><th class="num">成功率</th>
+          <th class="num">平均耗时</th><th class="num">24h 花费</th><th class="num">最近一次</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>
+      <div class="dash-body dash-note" style="border-top:1px solid var(--line)">
+        不可用 ≠ 系统坏了：probe 只验二进制与版本，验不了余额/凭据（codex 402、claude 401 就是这种情况）。L4/L5 默认走 dsh。
+      </div>
+    </div>
+  </div>`;
+}
+
+// ── 自动任务（脉冲）───────────────────────────────────────────────
+async function loadAutopilots(force = false) {
+  const body = $('#autopilots-body');
+  if (!body) return;
+  if (!force && isFresh(state.autopilotsAt, 5000) && state.autopilots) { renderAutopilots(state.autopilots); return; }
+  try {
+    const d = await api('/api/autopilots');
+    state.autopilots = d;
+    state.autopilotsAt = Date.now();
+    setOnline(true);
+    renderAutopilots(d);
+  } catch (e) {
+    setOnline(false);
+    if (state.autopilots) { toast('自动任务刷新失败：' + e.message, 'err'); renderAutopilots(state.autopilots); }
+    else body.innerHTML = errorCard('自动任务加载失败', e);
+  }
+}
+
+function pulseStatusChip(st) {
+  if (!st) return '<span class="chip muted">未跑过</span>';
+  if (st === 'ok') return '<span class="chip st st-succeeded">成功</span>';
+  if (st === 'fail') return '<span class="chip st st-failed">失败</span>';
+  if (st === 'skip') return '<span class="chip muted">跳过</span>';
+  return `<span class="chip muted">${esc(st)}</span>`;
+}
+
+function renderAutopilots(d) {
+  const body = $('#autopilots-body');
+  if (!body) return;
+  const s = d.summary || {};
+  const daemon = d.daemon || {};
+  const pulses = d.pulses || [];
+
+  const badge = $('#badge-autopilots');
+  if (badge) {
+    badge.textContent = String(s.due ?? 0);
+    badge.classList.toggle('hot', (s.due ?? 0) > 0);
+  }
+  const btnStart = $('#btn-daemon-start');
+  const btnStop = $('#btn-daemon-stop');
+  if (btnStart) btnStart.disabled = !!daemon.running;
+  if (btnStop) btnStop.disabled = !daemon.running;
+
+  const head = `<div class="kpis">
+    ${kpiCard('脉冲总数', String(s.total ?? 0), `启用 ${s.enabled ?? 0} · 暂停 ${s.paused ?? 0}`)}
+    ${kpiCard('到期未跑', String(s.due ?? 0), (s.due ?? 0) > 0 ? '守护进程未跟上' : '没有积压', (s.due ?? 0) > 0 ? 'warn' : 'good')}
+    ${kpiCard('上次失败', String(s.failing ?? 0), 'last_status=fail 的数量', (s.failing ?? 0) > 0 ? 'bad' : '')}
+    ${kpiCard('守护进程', daemon.running ? '运行中' : '未运行', daemon.running ? `pid ${daemon.pid}` : '脉冲不会自己跑', daemon.running ? 'good' : 'warn')}
+  </div>`;
+
+  if (!pulses.length) {
+    body.innerHTML = `<div class="dash">${head}${emptyState({
+      icon: ICON.tasks,
+      title: '还没有脉冲',
+      lines: ['脉冲表为空时，守护进程首次启动会自动 seedPulses() 写入默认巡检节奏（扫描 / 判定 / 看门狗 / 晨报…）。'],
+      command: 'node --no-warnings scripts/hive.mjs daemon',
+      actions: '<button class="btn primary" data-empty-act="reload">重试</button>',
+    })}</div>`;
+    return;
+  }
+
+  const rows = pulses.map((p) => `<tr data-kind="pulse" data-id="${esc(p.id)}" class="${p.enabled ? '' : 'row-dim'}">
+    <td><b>${esc(p.name)}</b><div class="dim small mono">${esc(p.id)}${p.handler ? ' · ' + esc(p.handler) : ''}</div></td>
+    <td><span class="mono small">${esc(p.spec)}</span><div class="dim small">${esc(p.schedule)}</div></td>
+    <td>${p.lastRunAt ? fmt.time(p.lastRunAt) : '<span class="dim">—</span>'}<div>${pulseStatusChip(p.lastStatus)}</div></td>
+    <td>${p.nextRunAt ? fmt.time(p.nextRunAt) : '<span class="dim">—</span>'}${p.enabled && p.due ? `<div><span class="chip st st-running">已到期 ${p.overdueSec}s</span></div>` : ''}</td>
+    <td><input type="checkbox" class="toggle" data-act="ap-toggle" data-id="${esc(p.id)}" ${p.enabled ? 'checked' : ''} aria-label="${esc(p.name)} 启用"></td>
+    <td><button class="btn sm" data-act="ap-run" data-id="${esc(p.id)}">立即执行</button></td>
+  </tr>`).join('');
+
+  body.innerHTML = `<div class="dash">${head}
+    <div class="dash-card">
+      <h3>脉冲（自动任务）<span class="spacer"></span><span class="dash-note">${esc((d.notes || []).join(' · ') || '')}</span></h3>
+      <div class="dash-scroll"><table class="dash-table">
+        <thead><tr><th>名称 / handler</th><th>周期</th><th>上次运行</th><th>下次运行</th><th>启用</th><th>操作</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>
+      <div class="dash-body dash-note" style="border-top:1px solid var(--line)">
+        「立即执行」只代跑能独立复现的 handler（scan / triage / watchdog）；晨报、上下文刷新、定时自检依赖守护进程上下文与 LLM，Web 端不代跑，避免重复计费与重复推送。
+      </div>
+    </div>
+  </div>`;
+}
+
+async function onPulseAction(act, id) {
+  if (act === 'ap-toggle') return undefined; // 开关走 change 事件
+  if (act !== 'ap-run') return undefined;
+  const pulse = (state.autopilots?.pulses || []).find((p) => p.id === id);
+  if (!pulse) return undefined;
+  const runnable = ['scan', 'triage', 'watchdog'].includes(pulse.handler);
+  const tip = runnable
+    ? `将立即执行一次「${pulse.name}」（handler=${pulse.handler}）。`
+    : `「${pulse.name}」的 handler=${pulse.handler || '未配置'} 不能由 Web 端代跑，本次只会返回说明。`;
+  if (!confirm(`${tip}\n\n继续？`)) return undefined;
+  try {
+    toast(`正在执行 ${pulse.name}…`, 'info');
+    const r = await api(`/api/autopilots/${encodeURIComponent(id)}/run`, { method: 'POST', body: '{}' });
+    if (r.ran && r.ok) toast(`已执行：${(r.result && r.result.summary) || pulse.name}（${r.ms}ms）`, 'ok');
+    else if (r.skipped) toast(r.reason || '该脉冲不能由 Web 端代跑（见页面说明）', 'info');
+    else toast(`未执行：${r.error || r.reason || '原因未明'}`, 'err');
+    state.autopilotsAt = 0;
+    await loadAutopilots(true);
+  } catch (e) {
+    toast('执行失败：' + e.message, 'err');
+  }
+  return undefined;
+}
+
+async function togglePulse(id, enabled, input) {
+  try {
+    if (input) input.disabled = true;
+    const r = await api(`/api/autopilots/${encodeURIComponent(id)}/toggle`, {
+      method: 'POST', body: JSON.stringify({ enabled: !!enabled }),
+    });
+    toast(r.note || (enabled ? '已启用' : '已暂停'), 'ok');
+    state.autopilotsAt = 0;
+    await loadAutopilots(true);
+  } catch (e) {
+    if (input) input.checked = !enabled;
+    toast('切换失败：' + e.message, 'err');
+    if (input) input.disabled = false;
+  }
+}
+
+async function daemonStart(btn) {
+  if (!confirm('启动守护进程？\n\n它会以独立后台进程常驻：巡检 → 判定 → 派发 → 看门狗 → 看板。日志写入 data/logs。\n也可以直接跑：node --no-warnings scripts/hive.mjs daemon')) return;
+  try {
+    if (btn) { btn.disabled = true; btn.textContent = '启动中…'; }
+    const r = await api('/api/control/start', { method: 'POST', body: '{}' });
+    toast(r.note || (r.running ? '守护进程已启动' : '已发起启动'), r.running ? 'ok' : 'info');
+    state.autopilotsAt = 0;
+    await loadAutopilots(true);
+  } catch (e) {
+    toast('启动失败：' + e.message, 'err');
+  } finally {
+    if (btn) {
+      btn.textContent = '启动守护进程';
+      btn.disabled = !!(state.autopilots?.daemon?.running);
+    }
+  }
+}
+
+async function daemonStop(btn) {
+  if (!confirm('停止守护进程？\n\n看板仍可用，但巡检 / 派发 / 看门狗会停；正在跑的任务会失去监管。')) return;
+  try {
+    if (btn) { btn.disabled = true; btn.textContent = '停止中…'; }
+    const r = await api('/api/control/stop', { method: 'POST', body: JSON.stringify({ confirm: true }) });
+    toast(r.note || (r.stopped ? '守护进程已停止' : '未停止'), r.stopped ? 'ok' : 'err');
+    state.autopilotsAt = 0;
+    await loadAutopilots(true);
+  } catch (e) {
+    toast('停止失败：' + e.message, 'err');
+  } finally {
+    if (btn) {
+      btn.textContent = '停止';
+      btn.disabled = !(state.autopilots?.daemon?.running);
+    }
+  }
+}
+
+// ── 成本 ─────────────────────────────────────────────────────────
+async function loadCost(force = false) {
+  const body = $('#cost-body');
+  if (!body) return;
+  if (!force && isFresh(state.costAt, 15000) && state.cost) { renderCost(state.cost); return; }
+  try {
+    const d = await api('/api/cost?days=' + encodeURIComponent(state.costDays));
+    state.cost = d;
+    state.costAt = Date.now();
+    setOnline(true);
+    renderCost(d);
+  } catch (e) {
+    setOnline(false);
+    if (state.cost) { toast('成本刷新失败：' + e.message, 'err'); renderCost(state.cost); }
+    else body.innerHTML = errorCard('成本数据加载失败', e);
+  }
+}
+
+function renderCost(d) {
+  const body = $('#cost-body');
+  if (!body) return;
+  const t = d.totals || {};
+  const bp = d.budgetProgress || {};
+  const be = d.byExecutor || [];
+  const ratio = Math.max(0, Math.min(1, Number(bp.ratio) || 0));
+
+  const maxExec = Math.max(0.0001, ...be.map((x) => Number(x.costCny) || 0));
+  const execBars = be.length
+    ? be.map((x) => {
+      const pct = Math.max(2, Math.round(((Number(x.costCny) || 0) / maxExec) * 100));
+      return `<div class="hbar" title="${esc(x.executor)} · ${x.runs} 次 · ${x.tokens} tokens · 失败 ${x.failed}">
+        <span class="hbar-label">${esc(x.executor)}</span>
+        <span class="hbar-track"><i style="width:${pct}%"></i></span>
+        <span class="hbar-val">${fmt.money(x.costCny)} · ${x.runs} 次</span>
+      </div>`;
+    }).join('')
+    : '<div class="dash-empty">窗口内没有按执行器的花费记录</div>';
+
+  const topRows = (d.topTasks || []).map((x, i) => `<tr>
+    <td class="num">${i + 1}</td>
+    <td>${esc(x.title || '(无标题)')}<div class="dim small mono">${esc(truncate(x.task_id, 24))}</div></td>
+    <td>${x.status ? statusChip(x.status) : '<span class="dim">—</span>'}</td>
+    <td class="mid small">${esc(x.executor || '—')}</td>
+    <td class="num">${x.runs}</td>
+    <td class="num">${x.tokens}</td>
+    <td class="num">${fmt.money(x.costCny)}</td>
+  </tr>`).join('');
+
+  body.innerHTML = `<div class="dash">
+    <div class="kpis">
+      ${kpiCard(d.range?.label || '窗口内花费', fmt.money(t.costCny), `${d.range?.fromDate || ''} → ${d.range?.toDate || ''}`, (Number(t.costCny) || 0) > 0 ? '' : 'good')}
+      ${kpiCard('Tokens', String(t.tokens ?? 0), `in ${t.tokensIn ?? 0} / out ${t.tokensOut ?? 0}`)}
+      ${kpiCard('运行次数', String(t.runs ?? 0), `失败 ${t.failed ?? 0}`, (t.failed ?? 0) > 0 ? 'warn' : '')}
+      ${kpiCard('今日花费', fmt.money(bp.spentCny), `预算 ${fmt.money(bp.budgetCny)} · ${Math.round(ratio * 100)}%`, ratio >= 0.8 ? 'bad' : (ratio > 0 ? 'warn' : 'good'))}
+    </div>
+
+    <div class="dash-card"><h3>每日花费</h3><div class="dash-body">${dailyCostSvg(d.byDay)}</div></div>
+
+    <div class="dash-card"><h3>今日预算进度</h3><div class="dash-body">
+      <div class="budget">
+        <div class="budget-head">
+          <span>已用 <b>${fmt.money(bp.spentCny)}</b> / 日预算 <b>${fmt.money(bp.budgetCny)}</b></span>
+          <span>${Math.round(ratio * 100)}%${bp.remainingCny != null ? ` · 剩余 ${fmt.money(bp.remainingCny)}` : ''}</span>
+        </div>
+        <div class="budget-track"><i class="${ratio >= 0.8 ? 'warn' : ''}" style="width:${(ratio * 100).toFixed(1)}%"></i></div>
+        <div class="dash-note">护栏：超 ${Math.round((Number(bp.warnRatio) || 0.8) * 100)}% 告警，超 100% 守护进程暂停派单（config.settings.dailyBudgetCny）。</div>
+      </div>
+    </div></div>
+
+    <div class="dash-card"><h3>按执行器分组（${be.length} 个）</h3><div class="dash-body">
+      <div class="hbars">${execBars}</div>
+      ${d.note ? `<div class="dash-note" style="margin-top:9px">${esc(d.note)}</div>` : ''}
+    </div></div>
+
+    <div class="dash-card"><h3>任务花费 Top10</h3>
+      ${topRows
+        ? `<div class="dash-scroll"><table class="dash-table">
+            <thead><tr><th class="num">#</th><th>任务</th><th>状态</th><th>执行器</th><th class="num">运行</th><th class="num">Tokens</th><th class="num">花费</th></tr></thead>
+            <tbody>${topRows}</tbody>
+          </table></div>`
+        : '<div class="dash-empty">窗口内没有按任务的花费记录</div>'}
+    </div>
+  </div>`;
+}
+
+// ── 自检与依赖 ────────────────────────────────────────────────────
+async function loadSetup(force = false) {
+  const body = $('#setup-body');
+  if (!body) return;
+  if (!force && isFresh(state.setupAt, 60000) && state.setup) { renderSetup(state.setup); return; }
+  body.innerHTML = '<div class="dash-empty">正在探测：Node / SQLite / 数据库 / 执行器 / 通道 / 磁盘 / 预算 / 守护进程…（首次约 5–10 秒，之后 60 秒内命中缓存）</div>';
+  try {
+    const d = await api('/api/setup/doctor');
+    state.setup = d;
+    state.setupAt = Date.now();
+    setOnline(true);
+    renderSetup(d);
+  } catch (e) {
+    setOnline(false);
+    body.innerHTML = errorCard('自检失败', e);
+  }
+}
+
+function setupRow(it) {
+  const installBtn = it.install
+    ? `<button class="btn sm primary" data-act="setup-install" data-id="${esc(it.install)}">一键安装</button>`
+    : '';
+  const guide = Array.isArray(it.guide) && it.guide.length
+    ? `<ul class="setup-guide">${it.guide.map((g) => `<li>${esc(g)}</li>`).join('')}</ul>`
+    : '';
+  return `<div class="setup-row" data-kind="dep" data-id="${esc(it.id)}">
+    <div>${statusPill(it.status)}</div>
+    <div>
+      <div class="setup-title">${esc(it.title)}${it.meta && it.meta.required ? '<span class="chip muted">必需</span>' : ''}${it.installable ? '<span class="chip muted">可一键安装</span>' : ''}</div>
+      <div class="setup-detail">${esc(it.detail)}</div>
+      ${it.fix ? `<div class="setup-fix">修复建议：${esc(it.fix)}</div>` : ''}
+      ${guide}
+    </div>
+    <div class="setup-actions">${installBtn}</div>
+  </div>`;
+}
+
+function renderSetup(d) {
+  const body = $('#setup-body');
+  if (!body) return;
+  const s = d.summary || {};
+  const items = d.items || [];
+  const core = items.filter((i) => i.group !== 'deps');
+  const tone = d.status === 'PASS' ? 'good' : d.status === 'FAIL' ? 'bad' : 'warn';
+  const env = d.env || {};
+
+  const installCard = state.installResult
+    ? `<div class="dash-card"><h3>最近一次安装/检测结果</h3><div class="dash-body">
+        <div class="dash-note">id=<b>${esc(state.installResult.id || '')}</b> · ok=${state.installResult.ok ? 'true' : 'false'} · ${esc(state.installResult.note || '')}</div>
+        ${state.installResult.cmd ? `<pre class="mini" style="margin-top:8px">$ ${esc(state.installResult.cmd)}\n${esc(String(state.installResult.stdout || '').slice(-1200))}${state.installResult.stderr ? '\n[stderr]\n' + esc(String(state.installResult.stderr).slice(-800)) : ''}</pre>` : ''}
+        ${Array.isArray(state.installResult.guide) && state.installResult.guide.length
+          ? `<ul class="setup-guide">${state.installResult.guide.map((g) => `<li>${esc(g)}</li>`).join('')}</ul>` : ''}
+      </div></div>`
+    : '';
+
+  body.innerHTML = `<div class="dash">
+    <div class="kpis">
+      ${kpiCard('总体结论', esc(d.status || '—'), `PASS ${s.pass ?? 0} · WARN ${s.warn ?? 0} · FAIL ${s.fail ?? 0}`, tone)}
+      ${kpiCard('依赖 CLI', `${s.depsOk ?? 0} / ${s.depsTotal ?? 0}`, (s.depsOk ?? 0) === (s.depsTotal ?? 0) ? '全部就绪' : '缺失项可一键安装', (s.depsOk ?? 0) === (s.depsTotal ?? 0) ? 'good' : 'warn')}
+      ${kpiCard('Node', 'v' + esc(env.node || '?'), 'node:sqlite 需要 >= 22.5')}
+      ${kpiCard('数据库', fmt.bytes(env.dbSizeBytes), esc(env.dbPath || '—'))}
+      ${kpiCard('守护进程', env.daemon && env.daemon.running ? '运行中' : '未运行', env.daemon && env.daemon.pid ? 'pid ' + env.daemon.pid : '看板可单独用', env.daemon && env.daemon.running ? 'good' : 'warn')}
+    </div>
+
+    <div class="dash-card"><h3>核心自检（${core.length} 项）</h3><div class="dash-body">
+      <div class="setup-group">${core.map(setupRow).join('') || '<div class="dash-empty">没有自检项</div>'}</div>
+    </div></div>
+
+    ${installCard}
+  </div>`;
+}
+
+async function installDep(id, el) {
+  if (!id) return;
+  const dep = (state.setup?.deps || []).find((x) => x.id === id);
+  const label = dep?.label || id;
+  if (!confirm(`执行 npm 全局安装：\n${label}${dep?.pkg ? '\n包名：' + dep.pkg : ''}\n\n只安装命令行工具本身，不会登录账号。可能耗时数十秒，继续？`)) return;
+  try {
+    if (el) { el.disabled = true; el.textContent = '安装中…'; }
+    toast(`正在安装 ${label}（最长 180s）…`, 'info');
+    const r = await api('/api/setup/install', { method: 'POST', body: JSON.stringify({ id }) });
+    state.installResult = r;
+    toast(
+      r.ok ? (r.already ? `${label} 已安装，无需重复安装` : `${label} 安装成功`)
+        : `${label} 未安装：${r.reason || r.note || '见下方详情'}`,
+      r.ok ? 'ok' : 'err'
+    );
+    state.setupAt = 0;
+    await loadSetup(true);
+  } catch (e) {
+    toast('安装失败：' + e.message, 'err');
+    if (el) { el.disabled = false; el.textContent = '一键安装'; }
+  }
+}
+
+
+// ── 可选 Agent 依赖：装 / 更新 / 降级 / 卸载（全部人工点击）───────────
+const cmpVer = (a, b) => {
+  const parse = (v) => {
+    const clean = String(v || '').trim().replace(/^v/i, '').split('+')[0];
+    const [core, pre] = clean.split('-');
+    const nums = core.split('.').map((x) => parseInt(x, 10) || 0);
+    while (nums.length < 3) nums.push(0);
+    return { nums: nums.slice(0, 3), pre: pre ? pre.split('.') : [] };
+  };
+  const A = parse(a);
+  const B = parse(b);
+  for (let i = 0; i < 3; i++) if (A.nums[i] !== B.nums[i]) return A.nums[i] < B.nums[i] ? -1 : 1;
+  if (!A.pre.length && !B.pre.length) return 0;
+  if (!A.pre.length) return 1;
+  if (!B.pre.length) return -1;
+  const n = Math.max(A.pre.length, B.pre.length);
+  for (let i = 0; i < n; i++) {
+    const x = A.pre[i];
+    const y = B.pre[i];
+    if (x === undefined) return -1;
+    if (y === undefined) return 1;
+    const xn = /^\d+$/.test(x);
+    const yn = /^\d+$/.test(y);
+    if (xn && yn) { if (Number(x) !== Number(y)) return Number(x) < Number(y) ? -1 : 1; }
+    else if (xn !== yn) return xn ? -1 : 1;
+    else if (x !== y) return x < y ? -1 : 1;
+  }
+  return 0;
+};
+
+function depStatusChip(x) {
+  if (!x.installed) return '<span class="chip st st-queued">未安装</span>';
+  if (x.metaError) return '<span class="chip st st-planned">已装 · 版本未知</span>';
+  if (x.updateAvailable) return '<span class="chip st st-running">可升级</span>';
+  return '<span class="chip st st-succeeded">已是最新</span>';
+}
+
+async function loadDeps(force = false) {
+  const block = $('#deps-block');
+  if (!block) return;
+  if (!force && isFresh(state.depsAt, 60000) && state.deps) { renderDeps(state.deps); return; }
+  if (!state.deps) {
+    block.innerHTML = `<div class="dash-card"><h3>可选 Agent 依赖</h3>
+      <div class="dash-body dash-note">正在查询 npm registry…（首次约 10–18 秒：先试 registry.npmjs.org，超时自动回落本机 npm 配置的镜像；之后 10 分钟内走缓存）</div>
+    </div>`;
+  }
+  try {
+    const d = force
+      ? await api('/api/deps/check', { method: 'POST', body: '{}' })
+      : await api('/api/deps');
+    state.deps = d;
+    state.depsAt = Date.now();
+    renderDeps(d);
+  } catch (e) {
+    block.innerHTML = errorCard('依赖清单加载失败', e);
+  }
+}
+
+function depsResultHtml(r) {
+  if (!r) return '';
+  return `<div class="dash-card" style="margin-top:12px"><h3>最近一次依赖操作 · ${esc(r.id || '')} ${esc(r.action || '')}</h3><div class="dash-body">
+    <div class="dash-note">${r.ok ? '✅' : '❌'} ${esc(r.note || (r.ok ? '完成' : '失败'))}
+      ${r.cmd ? ` · <code>${esc(r.cmd)}</code>` : ''}
+      ${r.exitCode != null ? ` · exit ${esc(r.exitCode)}` : ''}
+      ${(r.before || r.after) ? ` · ${esc(r.before || '未安装')} → ${esc(r.after || '未安装')}` : ''}
+      ${r.durationMs ? ` · ${esc(r.durationMs)}ms` : ''}
+    </div>
+    ${r.stderr ? `<pre class="mini" style="margin-top:8px;color:#ffc9cf">${esc(String(r.stderr).slice(-1500))}</pre>` : ''}
+    ${r.stdout ? `<pre class="mini" style="margin-top:8px">${esc(String(r.stdout).slice(-1500))}</pre>` : ''}
+  </div></div>`;
+}
+
+function renderDeps(d) {
+  const block = $('#deps-block');
+  if (!block) return;
+  const deps = d.deps || [];
+  const s = d.summary || {};
+  const reg = d.registry || {};
+  if (!deps.length) {
+    block.innerHTML = `<div class="dash-card"><h3>可选 Agent 依赖</h3><div class="dash-body"><div class="dash-empty">没有可管理的依赖项</div></div></div>`;
+    return;
+  }
+  const regNote = reg.used === 'configured'
+    ? `npmjs.org 直连超时，元数据取自本机 npm 配置的 registry（${reg.configured || '镜像'}）`
+    : (reg.used === 'npmjs' ? '元数据取自 registry.npmjs.org' : '元数据来源未确定');
+
+  const rows = deps.map((x) => {
+    const busy = state.depsBusy === x.id;
+    const lower = (x.versions || []).filter((v) => x.version && cmpVer(v, x.version) < 0);
+    const open = state.depsOpen === x.id;
+    const btn = (act, label, cls, extra = '') => `<button class="btn sm ${cls}" data-deps-act="${act}" data-dep="${esc(x.id)}" ${extra} ${busy ? 'disabled' : ''}>${label}</button>`;
+    const actions = [];
+    if (!x.installed) actions.push(btn('install', '安装', 'primary'));
+    if (x.installed && x.updateAvailable) actions.push(btn('update', `更新到 ${esc(x.latest || 'latest')}`, 'primary'));
+    if (x.installed && lower.length) actions.push(btn('versions', `降级${open ? ' ▴' : ' ▾'}`, ''));
+    if (x.installed) actions.push(btn('uninstall', '卸载', 'danger'));
+
+    return `<tr data-kind="agentdep" data-id="${esc(x.id)}" class="${x.installed ? '' : 'row-dim'}">
+      <td>
+        <b>${esc(x.name)}</b>${x.required ? '<span class="chip muted" style="margin-left:6px">必需</span>' : ''}
+        <div class="dim small mono">${esc(x.pkg)}${x.sizeHint ? ' · ' + esc(x.sizeHint) : ''}</div>
+        <div class="setup-detail">${esc(x.purpose)}</div>
+        <div class="dim small" style="margin-top:2px">不做会怎样：${esc(x.fallback)}</div>
+        ${x.metaError ? `<div class="setup-fix">版本信息取不到：${esc(x.metaError)}</div>` : ''}
+        ${x.risk ? `<div class="dim small" style="margin-top:2px">风险提示：${esc(x.risk)}</div>` : ''}
+      </td>
+      <td class="mono">${esc(x.version || '—')}<div class="dim small">${esc(x.versionSource || '')}</div></td>
+      <td class="mono">${esc(x.latest || '—')}<div class="dim small">${x.totalVersions ? x.totalVersions + ' 个版本' : ''}</div></td>
+      <td>${depStatusChip(x)}</td>
+      <td><div class="dash-actions">${actions.join('')}${busy ? '<span class="dim small">处理中…</span>' : ''}</div></td>
+    </tr>${open ? `<tr class="dep-vers-row"><td colspan="5">
+      <div class="dash-note">当前 ${esc(x.version || '—')}；下面只列比当前更低的版本（取自最近 20 个）：</div>
+      <div class="dash-actions" style="margin-top:6px">
+        ${lower.map((v) => `<button class="btn sm" data-deps-act="pick" data-dep="${esc(x.id)}" data-version="${esc(v)}" ${busy ? 'disabled' : ''}>装 ${esc(v)}</button>`).join('')
+          || '<span class="dim small">最近 20 个版本里没有比当前更低的</span>'}
+      </div></td></tr>` : ''}`;
+  }).join('');
+
+  block.innerHTML = `<div class="dash-card">
+    <h3>可选 Agent 依赖（${s.installed ?? 0}/${s.total ?? deps.length} 已装 · ${s.updatable ?? 0} 可升级）
+      <span class="spacer"></span>
+      <span class="dash-note">${esc(regNote)}</span>
+      <button class="btn sm" data-deps-act="refresh">刷新版本</button>
+    </h3>
+    <div class="dash-scroll"><table class="dash-table">
+      <thead><tr><th>名称 / 用途</th><th>当前版本</th><th>最新版本</th><th>状态</th><th>操作</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>
+    <div class="dash-body dash-note" style="border-top:1px solid var(--line)">
+      ${(d.notes || []).map((n) => `· ${esc(n)}`).join(' ')}
+      命令固定为 <code>npm install -g &lt;pkg&gt;@&lt;version&gt;</code> / <code>npm uninstall -g &lt;pkg&gt;</code>（300s 超时）；Windows 经 cmd.exe 调用。
+    </div>
+    ${depsResultHtml(state.depsResult)}
+  </div>`;
+}
+
+async function onDepsAction(act, id, version, el) {
+  if (act === 'refresh') return loadDeps(true);
+  if (act === 'versions') {
+    state.depsOpen = state.depsOpen === id ? null : id;
+    if (state.deps) renderDeps(state.deps);
+    return undefined;
+  }
+  const dep = (state.deps?.deps || []).find((x) => x.id === id);
+  if (!dep) return undefined;
+
+  let action = act;
+  let payload = {};
+  if (act === 'pick') { action = 'install'; payload = { version }; }
+  if (act === 'install') payload = { version: null };
+  if (act === 'update') payload = {};
+
+  if (act === 'uninstall') {
+    const warn = dep.required ? `\n\n⚠ ${dep.name} 是必需依赖：${dep.fallback}` : '';
+    if (!confirm(`卸载 ${dep.name}（${dep.pkg}）？${warn}\n\n卸载后随时可以再装回来。`)) return undefined;
+    payload = { confirm: true };
+  } else {
+    const target = version ? '@' + version : (act === 'update' ? '@' + (dep.latest || 'latest') : '（latest）');
+    const verb = action === 'update' ? '更新' : '安装';
+    if (!confirm(`${verb} ${dep.name} ${target}？\n\n将执行：npm install -g ${dep.pkg}${target === '（latest）' ? '@latest' : target}\n这会修改本机全局 npm 包（超时 300s）。`)) return undefined;
+  }
+
+  const endpoint = `/api/deps/${encodeURIComponent(id)}/${action}`;
+  state.depsBusy = id;
+  if (state.deps) renderDeps(state.deps);
+  try {
+    const r = await api(endpoint, { method: 'POST', body: JSON.stringify(payload) });
+    state.depsResult = r;
+    if (r.noop) toast(`${dep.name}：${r.reason}`, 'info');
+    else if (r.ok) toast(`${dep.name} ${action} 成功${r.changed ? `：${r.before || '未安装'} → ${r.after}` : ''}`, 'ok');
+    else toast(`${dep.name} ${action} 失败：${r.note || r.stderr || '未知错误'}`, 'err');
+    state.depsAt = 0;
+    await loadDeps(false);
+  } catch (e) {
+    state.depsResult = { ok: false, id, action, note: e.message };
+    toast(`${dep.name} ${action} 失败：${e.message}`, 'err');
+    if (state.deps) renderDeps(state.deps);
+  } finally {
+    state.depsBusy = null;
+    if (state.deps) renderDeps(state.deps);
+  }
+  return undefined;
+}
+
 // ───────────────────────────── 错误卡 ─────────────────────────────
 function errorCard(title, e) {
   return `<div class="empty">
@@ -831,6 +1498,9 @@ function scheduleRefresh() {
       if (!typing) await loadApprovals();
     } else if (tab === 'tasks') await loadTasks();
     else if (tab === 'context') await loadContext();
+    else if (tab === 'agents') await loadAgents();
+    else if (tab === 'autopilots') await loadAutopilots();
+    else if (tab === 'cost') await loadCost();
   }, 700);
 }
 
@@ -849,6 +1519,10 @@ async function refreshActiveList() {
     case 'tasks': return loadTasks();
     case 'logs': return loadEvents();
     case 'context': return loadContext();
+    case 'agents': return loadAgents();
+    case 'autopilots': return loadAutopilots();
+    case 'cost': return loadCost();
+    case 'setup': loadSetup(); return loadDeps();
     default: return undefined;
   }
 }
@@ -983,7 +1657,8 @@ async function onApprovalAction(act, id, el, card) {
 
 // ───────────────────────────── 事件绑定 ─────────────────────────────
 function applyTab(name) {
-  const tab = ['inbox', 'outbox', 'tasks', 'logs', 'context'].includes(name) ? name : 'inbox';
+  const TAB_NAMES = ['inbox', 'outbox', 'tasks', 'logs', 'context', 'agents', 'autopilots', 'cost', 'setup'];
+  const tab = TAB_NAMES.includes(name) ? name : 'inbox';
   state.tab = tab;
   $$('.tab').forEach((t) => {
     const on = t.dataset.tab === tab;
@@ -1082,6 +1757,28 @@ function bindEvents() {
   $('#cf-cancel').addEventListener('click', () => closeFactForm());
   $('#fact-form').addEventListener('submit', submitFact);
 
+  // 仪表盘：执行器 / 自动任务 / 成本 / 自检
+  const bind = (sel, fn) => { const el = $(sel); if (el) el.addEventListener('click', fn); };
+  bind('#btn-refresh-agents', () => loadAgents(true));
+  bind('#btn-refresh-autopilots', () => loadAutopilots(true));
+  bind('#btn-refresh-cost', () => loadCost(true));
+  bind('#btn-setup-run', () => loadSetup(true));
+  bind('#btn-daemon-start', (e) => daemonStart(e.currentTarget));
+  bind('#btn-daemon-stop', (e) => daemonStop(e.currentTarget));
+  const costRange = $('#cost-range');
+  if (costRange) {
+    costRange.addEventListener('click', (e) => {
+      const seg = e.target.closest('[data-days]');
+      if (!seg) return;
+      const days = Number(seg.dataset.days) || 7;
+      if (days === state.costDays) return;
+      state.costDays = days;
+      $$('#cost-range .seg').forEach((s) => s.classList.toggle('is-active', s === seg));
+      state.costAt = 0;
+      loadCost(true);
+    });
+  }
+
   // 主区域事件委托
   const main = $('#main');
   main.addEventListener('click', onMainClick);
@@ -1110,6 +1807,12 @@ function onMainClick(e) {
       return loadTasks();
     }
     return;
+  }
+
+  // 依赖管理（自检页下段）：装 / 更新 / 降级 / 卸载 / 刷新版本
+  const depsBtn = e.target.closest('[data-deps-act]');
+  if (depsBtn) {
+    return onDepsAction(depsBtn.dataset.depsAct, depsBtn.dataset.dep, depsBtn.dataset.version || null, depsBtn);
   }
 
   // 事件引用 chip
@@ -1142,6 +1845,12 @@ function onMainClick(e) {
   if (kind === 'item') return onItemAction(act, id, btn, card);
   if (kind === 'task') return onTaskAction(act, id, btn);
   if (kind === 'approval') return onApprovalAction(act, id, btn, card);
+  if (kind === 'pulse') return onPulseAction(act, id, btn);
+  if (kind === 'dep') {
+    // 安装按钮自己带 data-id（依赖 id，如 dsh-cli），行上的 id 是 dep:dsh-cli 前缀版本
+    if (act === 'setup-install') return installDep(btn.dataset.id || '', btn);
+    return undefined;
+  }
   if (kind === 'fact') {
     if (act === 'edit-fact') {
       const fact = (state.context?.facts || []).find((f) => f.id === id);
@@ -1153,6 +1862,14 @@ function onMainClick(e) {
 }
 
 function onMainChange(e) {
+  // 自动任务：启用/暂停开关
+  const sw = e.target.closest('input[data-act="ap-toggle"]');
+  if (sw) {
+    const id = sw.dataset.id || sw.closest('[data-kind="pulse"]')?.dataset.id;
+    if (id) togglePulse(id, sw.checked, sw);
+    return;
+  }
+
   const sel = e.target.closest('select[data-act="relevel"]');
   if (!sel) return;
   const card = sel.closest('[data-kind="item"]');
@@ -1497,7 +2214,7 @@ function stopPolling() {
 // ───────────────────────────── 启动 ─────────────────────────────
 function restoreTab() {
   const h = (location.hash || '').replace('#', '');
-  if (['inbox', 'outbox', 'tasks', 'logs', 'context'].includes(h)) return h;
+  if (['inbox', 'outbox', 'tasks', 'logs', 'context', 'agents', 'autopilots', 'cost', 'setup'].includes(h)) return h;
   return 'inbox';
 }
 
@@ -1517,7 +2234,13 @@ async function boot() {
 
   // 兜底：即使 SSE 静默，也定期刷新（页面可见时才拉）
   setInterval(() => { if (!document.hidden) refreshOverview(); }, 45000);
-  setInterval(() => { if (!document.hidden) refreshActiveList(); }, 60000);
+  setInterval(() => {
+    if (document.hidden) return;
+    // 执行器 / 成本 / 自检 三页有各自的缓存 TTL 与手动刷新按钮，
+    // 不放进 60s 轮询：否则每分钟都会触发一次 probe（8 个进程）与 doctor。
+    if (['agents', 'cost', 'setup'].includes(state.tab)) return;
+    refreshActiveList();
+  }, 60000);
   setInterval(() => {
     $('#foot-time').textContent = '本地时间 ' + new Date().toLocaleTimeString('zh-CN', { hour12: false });
   }, 1000);

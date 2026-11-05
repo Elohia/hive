@@ -14,10 +14,14 @@
 // 一律 fs.existsSync + 动态 import + try/catch，缺失时返回 {ok:false, reason:'<x> registry not ready'}。
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
 import { q, dbStats, cursorGet, cursorSet } from '../core/db.mjs';
+import {
+  doctorReport, installDependency, INSTALL_IDS, readDaemonLock,
+  depsSnapshot, depAction, AGENT_DEPS_BY_ID,
+} from './setup.mjs';
 import { recent, emit } from '../core/events.mjs';
 import { shortHash } from '../core/ids.mjs';
 import {
@@ -941,6 +945,730 @@ function artifactFile(ctx) {
   return { __file: target, bytes: st.size, name: row.title || path.basename(target) };
 }
 
+// ═════════════════════════ 仪表盘：执行器 / 自动任务 / 成本 / 自检 ═════════════════════════
+//
+// 数据边界（延续文件头约定）：
+//  · runs / pulses 仍只用 core/db.mjs 的 q 做【只读 SELECT】。
+//  · pulses 的 enabled 字段没有对应 API（taskcenter 不管 pulses，pulse.mjs 只有 seed/mark），
+//    而这两个文件不在本任务的写作用域内 —— 因此只有「暂停/恢复」这一处内联 UPDATE，
+//    且只改 enabled 一个字段，不动 spec / next_run_at / 状态机。
+//  · 任务的标题/状态仍经 taskcenter 的 getTask() 读取，不直接 JOIN tasks 表。
+
+const delay = (ms) => new Promise((resolve) => {
+  const t = setTimeout(resolve, ms);
+  if (t && typeof t.unref === 'function') t.unref();
+});
+
+const AGENT_NAMES = ['llm', 'dsh', 'pi', 'codex', 'claude', 'shell'];
+const RUNTIME_PROBE_NAMES = new Set(['node', 'pwsh']);
+
+function localDateKey(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function daemonSummary(cfg) {
+  const d = readDaemonLock(cfg);
+  return {
+    running: !!d.running,
+    pid: d.pid ?? null,
+    startedAt: d.startedAt ?? null,
+    stale: !!d.stale,
+    lockPath: d.lockPath ?? null,
+  };
+}
+
+/** pulses 只读 SELECT（taskcenter 无 getter，见文件头约定）*/
+function pulseRows() {
+  try {
+    return q.all(
+      `SELECT id,name,spec,enabled,last_run_at,next_run_at,last_status,config
+       FROM pulses ORDER BY id`
+    ).map((p) => ({ ...p, enabled: !!p.enabled, config: parseJsonMaybe(p.config, {}) || {} }));
+  } catch { return []; }
+}
+
+let _pulseModCache = null;
+async function pulseModule(cfg) {
+  if (_pulseModCache) return _pulseModCache;
+  const load = await loadModule(cfg, 'src/task/pulse.mjs');
+  _pulseModCache = load.ok ? load.mod : null;
+  return _pulseModCache;
+}
+
+function scheduleText(spec) {
+  const s = String(spec || '');
+  let m = /^every:(\d+)([smh])$/.exec(s);
+  if (m) return `每 ${m[1]} ${{ s: '秒', m: '分钟', h: '小时' }[m[2]]}`;
+  m = /^daily:(\d{1,2}):(\d{2})$/.exec(s);
+  if (m) return `每天 ${String(m[1]).padStart(2, '0')}:${m[2]}`;
+  m = /^weekly:([\d,]+):(\d{1,2}):(\d{2})$/.exec(s);
+  if (m) return `每周 [${m[1]}] ${String(m[2]).padStart(2, '0')}:${m[3]}`;
+  return s || '—';
+}
+
+/** 单条脉冲 → 看板形状（nextFn 来自 src/task/pulse.mjs 的 nextRun，缺失时降级）*/
+function shapePulse(p, nextFn) {
+  let nextAt = p.next_run_at || null;
+  if (!nextAt && typeof nextFn === 'function') {
+    try { nextAt = nextFn(p.spec, new Date())?.toISOString() ?? null; } catch { nextAt = null; }
+  }
+  const due = !!nextAt && Date.parse(nextAt) <= Date.now();
+  const handler = p.config?.handler ?? null;
+  return {
+    id: p.id,
+    name: p.name || p.id,
+    spec: p.spec,
+    schedule: scheduleText(p.spec),
+    enabled: !!p.enabled,
+    handler,
+    config: p.config ?? {},
+    lastRunAt: p.last_run_at || null,
+    lastStatus: p.last_status || null,
+    nextRunAt: nextAt,
+    due,
+    overdueSec: due ? Math.max(0, Math.round((Date.now() - Date.parse(nextAt)) / 1000)) : 0,
+  };
+}
+
+// ── 1) GET /api/agents —— 执行器汇总 ────────────────────────────────
+async function agents(ctx) {
+  const cfg = ctx.cfg;
+  const probe = await probeExecutors(cfg);
+  const probes = probe.probes || {};
+  const since = new Date(Date.now() - 86400e3).toISOString();
+  let rows24 = [];
+  let rowsAll = [];
+  try {
+    rows24 = q.all(
+      `SELECT COALESCE(executor,'(未知)') AS executor,
+              COUNT(*) AS total,
+              SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END) AS ok,
+              SUM(CASE WHEN status IN ('failed','timeout') THEN 1 ELSE 0 END) AS failed,
+              SUM(CASE WHEN status='running' THEN 1 ELSE 0 END) AS running,
+              AVG(CASE WHEN duration_ms IS NOT NULL THEN duration_ms END) AS avgMs,
+              COALESCE(SUM(cost_cny),0) AS costCny,
+              COALESCE(SUM(tokens_in),0) AS tokensIn,
+              COALESCE(SUM(tokens_out),0) AS tokensOut,
+              MAX(started_at) AS lastRunAt
+         FROM runs WHERE started_at >= ? GROUP BY COALESCE(executor,'(未知)')`, since
+    );
+    rowsAll = q.all(
+      `SELECT COALESCE(executor,'(未知)') AS executor,
+              COUNT(*) AS total,
+              COALESCE(SUM(cost_cny),0) AS costCny,
+              COALESCE(SUM(tokens_in),0)+COALESCE(SUM(tokens_out),0) AS tokens
+         FROM runs GROUP BY COALESCE(executor,'(未知)')`
+    );
+  } catch { /* runs 表异常不影响执行器清单 */ }
+
+  const m24 = new Map(rows24.map((r) => [r.executor, r]));
+  const mAll = new Map(rowsAll.map((r) => [r.executor, r]));
+  const names = [
+    ...AGENT_NAMES,
+    ...Object.keys(probes).filter((n) => !AGENT_NAMES.includes(n) && !RUNTIME_PROBE_NAMES.has(n)),
+  ];
+  const executors = names.map((name) => {
+    const p = probes[name] || {};
+    const r24 = m24.get(name) || {};
+    const all = mAll.get(name) || {};
+    const total = Number(r24.total) || 0;
+    const ok = Number(r24.ok) || 0;
+    return {
+      name,
+      kind: p.kind ?? cfg.executors?.[name]?.kind ?? null,
+      enabled: p.enabled ?? (cfg.executors?.[name]?.enabled !== false),
+      ok: !!p.ok,
+      version: p.version ?? null,
+      reason: p.ok ? null : (p.reason ?? (probes[name] ? null : 'probe 未返回该执行器')),
+      runs24h: { total, ok, failed: Number(r24.failed) || 0, running: Number(r24.running) || 0 },
+      successRate: total ? +(ok / total).toFixed(3) : null,
+      avgDurationMs: r24.avgMs != null ? Math.round(Number(r24.avgMs)) : null,
+      costCny: +(Number(r24.costCny) || 0).toFixed(4),
+      tokensIn: Number(r24.tokensIn) || 0,
+      tokensOut: Number(r24.tokensOut) || 0,
+      lastRunAt: r24.lastRunAt || null,
+      lifetime: {
+        runs: Number(all.total) || 0,
+        costCny: +(Number(all.costCny) || 0).toFixed(4),
+        tokens: Number(all.tokens) || 0,
+      },
+    };
+  });
+  const runtimes = Object.entries(probes)
+    .filter(([n]) => RUNTIME_PROBE_NAMES.has(n))
+    .map(([n, v]) => ({ name: n, ok: !!v.ok, version: v.version ?? null, reason: v.ok ? null : (v.reason ?? null) }));
+  const sum = (f) => executors.reduce((a, e) => a + (Number(f(e)) || 0), 0);
+  const timed = executors.filter((e) => e.avgDurationMs != null);
+  return {
+    ok: true,
+    generatedAt: nowIso(),
+    ready: !!probe.ready,
+    reason: probe.reason ?? null,
+    detail: probe.detail ?? null,
+    windowHours: 24,
+    executors,
+    runtimes,
+    summary: {
+      executors: executors.length,
+      available: executors.filter((e) => e.ok).length,
+      enabled: executors.filter((e) => e.enabled).length,
+      runs24h: sum((e) => e.runs24h.total),
+      ok24h: sum((e) => e.runs24h.ok),
+      failed24h: sum((e) => e.runs24h.failed),
+      costCny24h: +sum((e) => e.costCny).toFixed(4),
+      costCnyAll: +sum((e) => e.lifetime.costCny).toFixed(4),
+      avgDurationMs: timed.length ? Math.round(timed.reduce((a, e) => a + e.avgDurationMs, 0) / timed.length) : null,
+    },
+    daemon: daemonSummary(cfg),
+  };
+}
+
+// ── 2) GET /api/autopilots —— 脉冲（自动任务）列表 ─────────────────────
+async function autopilots(ctx) {
+  const cfg = ctx.cfg;
+  const mod = await pulseModule(cfg);
+  const nextFn = mod ? pickFn(mod, ['nextRun']) : null;
+  const pulses = pulseRows().map((p) => shapePulse(p, nextFn));
+  const daemon = daemonSummary(cfg);
+  return {
+    ok: true,
+    generatedAt: nowIso(),
+    daemon,
+    pulses,
+    summary: {
+      total: pulses.length,
+      enabled: pulses.filter((p) => p.enabled).length,
+      paused: pulses.filter((p) => !p.enabled).length,
+      due: pulses.filter((p) => p.enabled && p.due).length,
+      failing: pulses.filter((p) => p.lastStatus === 'fail').length,
+    },
+    notes: [
+      daemon.running
+        ? '守护进程在跑：到期脉冲会被自动执行'
+        : '守护进程未运行：脉冲不会自己跑，可「立即执行」补跑，或在下面启动守护进程',
+      pulses.length ? null : '脉冲表为空：守护进程首次启动会 seedPulses() 写入默认巡检节奏（也可 node --no-warnings scripts/hive.mjs seed）',
+    ].filter(Boolean),
+  };
+}
+
+// ── 3) POST /api/autopilots/:id/toggle —— 暂停/恢复 ────────────────
+function autopilotToggle(ctx) {
+  const cfg = ctx.cfg;
+  const id = ctx.params[0];
+  const body = bodyObject(ctx);
+  const cur = pulseRows().find((p) => p.id === id);
+  if (!cur) bad(`脉冲不存在: ${id}`, 404);
+  const enabled = typeof body.enabled === 'boolean' ? body.enabled : !cur.enabled;
+  // pulses 的唯一写入点（见本节顶部说明）：只改 enabled，不动其他字段。
+  let changes = 0;
+  try {
+    const r = q.run('UPDATE pulses SET enabled=? WHERE id=?', enabled ? 1 : 0, id);
+    changes = Number(r?.changes) || 0;
+  } catch (e) {
+    throw new HttpError(500, `脉冲开关写入失败: ${e.message}`);
+  }
+  emit({
+    actor: 'human', type: enabled ? 'pulse.resumed' : 'pulse.paused', level: 'warn',
+    message: `${cur.name || id} → ${enabled ? '启用' : '暂停'}`,
+  });
+  const after = pulseRows().find((p) => p.id === id) || cur;
+  const shape = shapePulse(after, null);
+  return {
+    ok: true,
+    id,
+    enabled: shape.enabled,
+    pulse: shape,
+    changed: changes,
+    note: enabled
+      ? (cur.last_status === 'fail'
+        ? '已恢复；上次执行失败，注意观察下一轮'
+        : '已恢复：守护进程会在下个 tick 按周期执行')
+      : '已暂停：守护进程跳过它，周期与上次结果保留',
+    daemon: daemonSummary(cfg),
+  };
+}
+
+// ── 4) POST /api/autopilots/:id/run —— 立即执行一次 ────────────────
+// 守护进程里的 handler 表在 scripts/hive.mjs 的进程内存里，跨进程无法直接调用；
+// 这里只代跑【能独立复现】的三个 handler（scan / triage / watchdog），
+// 其余（digest 需要 LLM、context/selfcheck 依赖守护进程上下文）如实说明不代跑。
+const PULSE_RUNNERS = {
+  async scan(ctx, pulse) {
+    const logs = [];
+    const r = await runScan(ctx.cfg, {
+      only: pulse.config?.source,
+      timeoutMs: 60000,
+      maxItems: 300,
+      logs,
+    });
+    return {
+      ok: !!r.ok,
+      summary: r.ok
+        ? `扫描 ${r.scanned} 条 · 新增 ${r.created} · 去重 ${r.seen}${r.failed ? ' · 失败 ' + r.failed : ''}`
+        : `扫描失败: ${r.reason || '未知'}`,
+      detail: r,
+      logs: logs.slice(-20),
+    };
+  },
+  async triage(ctx) {
+    const load = await loadModule(ctx.cfg, 'src/task/router.mjs');
+    if (!load.ok) return { ok: false, summary: '路由模块未就绪', reason: load.reason };
+    const fn = pickFn(load.mod, ['triageInbox']);
+    if (typeof fn !== 'function') return { ok: false, summary: 'router.mjs 未导出 triageInbox()' };
+    const r = await fn({ limit: 15 });
+    return { ok: true, summary: `判定 ${Array.isArray(r) ? r.length : 0} 项` };
+  },
+  async watchdog(ctx) {
+    const load = await loadModule(ctx.cfg, 'src/task/watchdog.mjs');
+    if (!load.ok) return { ok: false, summary: '看门狗模块未就绪', reason: load.reason };
+    const fn = pickFn(load.mod, ['tick']);
+    if (typeof fn !== 'function') return { ok: false, summary: 'watchdog.mjs 未导出 tick()' };
+    const a = await fn();
+    return { ok: true, summary: `${Array.isArray(a) ? a.length : 0} 个动作` };
+  },
+};
+
+const PULSE_NOT_RUNNABLE = {
+  digest: '晨报/晚报要调用 LLM 并推送通知，属于守护进程职责，Web 端不代跑（避免重复计费/重复推送）',
+  context: '上下文刷新依赖守护进程的上下文模块，Web 端不代跑',
+  selfcheck: '定时自检依赖看门狗的运行态统计，Web 端不代跑',
+};
+
+async function markPulse(cfg, pulse, status) {
+  const mod = await pulseModule(cfg);
+  const fn = mod ? pickFn(mod, ['markPulseRun']) : null;
+  if (typeof fn === 'function') {
+    try { fn(pulse, status); return { ok: true, via: 'pulse.mjs' }; }
+    catch (e) { /* 落到下面的兜底 */ }
+  }
+  try {
+    q.run('UPDATE pulses SET last_run_at=?, last_status=? WHERE id=?', nowIso(), status, pulse.id);
+    return { ok: true, via: 'sql-fallback' };
+  } catch (e) { return { ok: false, error: e.message }; }
+}
+
+async function autopilotRun(ctx) {
+  const cfg = ctx.cfg;
+  const id = ctx.params[0];
+  const row = pulseRows().find((p) => p.id === id);
+  if (!row) bad(`脉冲不存在: ${id}`, 404);
+  const pulse = shapePulse(row, null);
+  const daemon = daemonSummary(cfg);
+  const handler = String(pulse.handler || '');
+  const runner = PULSE_RUNNERS[handler];
+
+  if (!runner) {
+    return {
+      ok: false,
+      ran: false,
+      skipped: true,
+      id,
+      name: pulse.name,
+      handler: handler || null,
+      reason: PULSE_NOT_RUNNABLE[handler]
+        ? PULSE_NOT_RUNNABLE[handler]
+        : `脉冲 handler=${handler || '(未配置)'} 没有可独立复现的实现，Web 端不代跑`,
+      hint: daemon.running
+        ? '守护进程在跑：它会在下个 tick 自然触发；想立刻跑可重启守护进程或用 CLI'
+        : '启动守护进程后由它按周期执行：node --no-warnings scripts/hive.mjs daemon',
+      daemon,
+    };
+  }
+
+  const t0 = Date.now();
+  try {
+    const r = await withTimeout(runner(ctx, row), 120000, `脉冲 ${pulse.name}`);
+    const ms = Date.now() - t0;
+    const mark = await markPulse(cfg, row, r && r.ok === false ? 'fail' : 'ok');
+    emit({
+      actor: 'human', type: 'pulse.manual_run', level: 'info',
+      message: `人工补跑 ${pulse.name}（${handler}）${r?.summary ? ' · ' + r.summary : ''}`,
+    });
+    return {
+      ok: !(r && r.ok === false),
+      ran: true,
+      id,
+      name: pulse.name,
+      handler,
+      ms,
+      result: r,
+      marked: mark,
+      note: daemon.running ? '守护进程在跑：本次为人工补跑，下个 tick 仍会自然触发' : '已人工执行一次',
+      daemon,
+    };
+  } catch (e) {
+    const ms = Date.now() - t0;
+    await markPulse(cfg, row, 'fail');
+    emit({ actor: 'human', type: 'pulse.manual_run', level: 'error', message: `人工补跑 ${pulse.name} 失败: ${String(e.message).slice(0, 300)}` });
+    return { ok: false, ran: true, id, name: pulse.name, handler, ms, error: e.message, daemon };
+  }
+}
+
+// ── 5) GET /api/cost?days=7 —— 成本聚合 ────────────────────────────
+function costReport(ctx) {
+  const days = qsInt(ctx.query, 'days', 7, 1, 90);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const from = new Date(today);
+  from.setDate(from.getDate() - (days - 1));
+  const fromIso = from.toISOString();
+
+  let byExecutor = [];
+  let topTasks = [];
+  const byDay = [];
+  let err = null;
+  try {
+    byExecutor = q.all(
+      `SELECT COALESCE(executor,'(未知)') AS executor, COUNT(*) AS runs,
+              SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END) AS ok,
+              SUM(CASE WHEN status IN ('failed','timeout') THEN 1 ELSE 0 END) AS failed,
+              COALESCE(SUM(cost_cny),0) AS costCny,
+              COALESCE(SUM(tokens_in),0) AS tokensIn,
+              COALESCE(SUM(tokens_out),0) AS tokensOut
+         FROM runs WHERE started_at >= ?
+         GROUP BY COALESCE(executor,'(未知)') ORDER BY costCny DESC`, fromIso
+    ).map((r) => ({
+      executor: r.executor,
+      runs: Number(r.runs) || 0,
+      ok: Number(r.ok) || 0,
+      failed: Number(r.failed) || 0,
+      costCny: +Number(r.costCny || 0).toFixed(4),
+      tokensIn: Number(r.tokensIn) || 0,
+      tokensOut: Number(r.tokensOut) || 0,
+      tokens: (Number(r.tokensIn) || 0) + (Number(r.tokensOut) || 0),
+    }));
+
+    const top = q.all(
+      `SELECT task_id, COALESCE(SUM(cost_cny),0) AS costCny, COUNT(*) AS runs,
+              COALESCE(SUM(tokens_in),0) AS tokensIn, COALESCE(SUM(tokens_out),0) AS tokensOut
+         FROM runs WHERE started_at >= ? AND task_id IS NOT NULL
+         GROUP BY task_id ORDER BY costCny DESC, tokensOut DESC LIMIT 10`, fromIso
+    );
+    topTasks = top.map((t) => {
+      let title = null, status = null, executor = null;
+      try {
+        const tk = getTask(t.task_id); // 任务仍经 taskcenter 读
+        title = tk?.title ?? null; status = tk?.status ?? null; executor = tk?.executor ?? null;
+      } catch { /* ignore */ }
+      return {
+        task_id: t.task_id, title, status, executor,
+        costCny: +Number(t.costCny || 0).toFixed(4),
+        runs: Number(t.runs) || 0,
+        tokensIn: Number(t.tokensIn) || 0,
+        tokensOut: Number(t.tokensOut) || 0,
+        tokens: (Number(t.tokensIn) || 0) + (Number(t.tokensOut) || 0),
+      };
+    });
+
+    // 按「本地日」切窗口：started_at 存 UTC ISO，直接用 date() 会错位
+    for (let i = days - 1; i >= 0; i--) {
+      const d = new Date(today);
+      d.setDate(d.getDate() - i);
+      const aIso = d.toISOString();
+      const e = new Date(d);
+      e.setDate(e.getDate() + 1);
+      const r = q.get(
+        `SELECT COUNT(*) AS runs, COALESCE(SUM(cost_cny),0) AS costCny,
+                COALESCE(SUM(tokens_in),0) AS tokensIn, COALESCE(SUM(tokens_out),0) AS tokensOut,
+                SUM(CASE WHEN status IN ('failed','timeout') THEN 1 ELSE 0 END) AS failed
+           FROM runs WHERE started_at >= ? AND started_at < ?`, aIso, e.toISOString()
+      ) || {};
+      byDay.push({
+        date: localDateKey(d),
+        label: localDateKey(d).slice(5),
+        runs: Number(r.runs) || 0,
+        failed: Number(r.failed) || 0,
+        costCny: +Number(r.costCny || 0).toFixed(4),
+        tokensIn: Number(r.tokensIn) || 0,
+        tokensOut: Number(r.tokensOut) || 0,
+        tokens: (Number(r.tokensIn) || 0) + (Number(r.tokensOut) || 0),
+      });
+    }
+  } catch (e) { err = e.message; }
+
+  const sum = (k) => byDay.reduce((a, d) => a + (Number(d[k]) || 0), 0);
+  let budget = null;
+  try { budget = todayCost(); } catch (e) { budget = { error: e.message }; }
+  const bCfg = Number(budget?.budget) || 0;
+  const bSpent = Number(budget?.costCny) || 0;
+  const empty = byDay.every((d) => d.runs === 0);
+
+  return {
+    ok: true,
+    generatedAt: nowIso(),
+    days,
+    error: err,
+    range: {
+      from: fromIso,
+      to: new Date().toISOString(),
+      fromDate: localDateKey(from),
+      toDate: localDateKey(today),
+      label: days === 1 ? '今天' : `近 ${days} 天`,
+    },
+    totals: {
+      costCny: +sum('costCny').toFixed(4),
+      tokensIn: sum('tokensIn'),
+      tokensOut: sum('tokensOut'),
+      tokens: sum('tokensIn') + sum('tokensOut'),
+      runs: sum('runs'),
+      failed: sum('failed'),
+    },
+    byDay,
+    byExecutor,
+    topTasks: topTasks.slice(0, 10),
+    budget,
+    budgetProgress: {
+      budgetCny: bCfg,
+      spentCny: bSpent,
+      ratio: bCfg ? +(bSpent / bCfg).toFixed(3) : 0,
+      remainingCny: bCfg ? +Math.max(0, bCfg - bSpent).toFixed(4) : null,
+      warnRatio: Number(ctx.cfg?.settings?.budgetWarnRatio) || 0.8,
+    },
+    empty,
+    note: empty
+      ? '窗口内没有任何运行记录：成本为 0 是正常的（还没有任务真正调用过 LLM / CLI）'
+      : null,
+  };
+}
+
+// ── 6) GET /api/setup/doctor —— 自检 ───────────────────────────────
+async function setupDoctor(ctx) {
+  const cfg = ctx.cfg;
+  const [probe, channels] = await Promise.all([
+    probeExecutors(cfg),
+    channelsInfo(),
+  ]);
+  let budget = null;
+  try { budget = todayCost(); } catch (e) { budget = { error: e.message }; }
+  let stats = null;
+  try { stats = dbStats(); } catch (e) { stats = { error: e.message }; }
+  return doctorReport({ cfg, probe, channels, budget, dbStats: stats, server: ctx.server });
+}
+
+// ── 7) 可选 Agent 依赖（版本管理）────────────────────────────────────
+// 规则（用户明确要求）：
+//  · 绝不自动安装 —— 只有用户点按钮才执行；
+//  · 安装前先探测，已装且版本相同 → noop，不重复装；
+//  · 安装/卸载后重新探测版本，返回 before / after；
+//  · 每次操作都写 events（dep.install / dep.uninstall），便于审计。
+const LEGACY_DEP_ALIAS = {
+  'dsh-cli': 'dsh',
+  'pi-cli': 'pi',
+  'codex-cli': 'codex',
+  'claude-cli': 'claude',
+  'agently-cli': 'agently',
+};
+
+async function runDepAction(ctx, id, action, { version = null, dryRun = false, confirm = false } = {}) {
+  const cfg = ctx.cfg;
+  const t0 = Date.now();
+  let r;
+  try {
+    r = await depAction({ id, action, version, dryRun, confirm });
+  } catch (e) {
+    if (e && e.status) throw new HttpError(e.status, e.message);
+    throw e;
+  }
+  const ok = !!r.ok;
+  const eventType = action === 'uninstall' ? 'dep.uninstall' : 'dep.install';
+  emit({
+    actor: 'human',
+    type: eventType,
+    level: ok ? 'info' : 'warn',
+    message: `${r.id || id} ${action}${r.targetVersion ? ' @' + r.targetVersion : ''} → ${ok ? (r.noop ? 'noop' : (r.dryRun ? 'dryRun' : 'ok')) : 'fail'}${r.changed ? `（${r.before || '未安装'} → ${r.after}）` : ''}`,
+    data: {
+      id: r.id || id, pkg: r.pkg || null, action,
+      version: r.targetVersion || version || null,
+      before: r.before ?? null, after: r.after ?? null,
+      exitCode: r.exitCode ?? null, ms: r.ms ?? null,
+      noop: !!r.noop, dryRun: !!r.dryRun, ok,
+    },
+  });
+
+  // 真装了/卸了 → 立刻强制复探执行器与通道，前端不用等 60s 缓存过期
+  if (ok && !r.noop && !r.dryRun) {
+    try {
+      const probe = await probeExecutors(cfg, { force: true });
+      r.executorProbe = {
+        ready: !!probe.ready,
+        ok: Object.entries(probe.probes || {}).filter(([, v]) => v && v.ok).map(([n]) => n),
+      };
+    } catch { /* 复探失败不影响结论 */ }
+    try { await channelsInfo({ force: true }); } catch { /* 通道探测失败不影响结论 */ }
+  }
+  return { ...r, ok, id: r.id || id, action, durationMs: r.ms ?? (Date.now() - t0) };
+}
+
+async function depsEndpoint() {
+  return depsSnapshot({ force: false });
+}
+
+async function depsCheck() {
+  return depsSnapshot({ force: true });
+}
+
+async function depsInstall(ctx) {
+  const body = bodyObject(ctx);
+  return runDepAction(ctx, ctx.params[0], 'install', {
+    version: body.version ?? null,
+    dryRun: body.dryRun === true,
+  });
+}
+
+async function depsUpdate(ctx) {
+  const body = bodyObject(ctx);
+  return runDepAction(ctx, ctx.params[0], 'update', { dryRun: body.dryRun === true });
+}
+
+async function depsUninstall(ctx) {
+  const body = bodyObject(ctx);
+  need(body.version == null || body.version === '', '卸载不接受 version 参数');
+  return runDepAction(ctx, ctx.params[0], 'uninstall', {
+    confirm: body.confirm === true,
+    dryRun: body.dryRun === true,
+  });
+}
+
+// ── 8) POST /api/setup/install —— 旧接口（兼容别名 → /api/deps/:id/install）
+async function setupInstall(ctx) {
+  const cfg = ctx.cfg;
+  const body = bodyObject(ctx);
+  const id = String(body.id || '').trim();
+  const agentIds = Object.keys(AGENT_DEPS_BY_ID);
+  need(id, `id 必填（Agent 依赖：${agentIds.join(', ')}；兼容旧 id：${INSTALL_IDS.join(', ')}）`);
+
+  const legacy = LEGACY_DEP_ALIAS[id];
+  if (legacy) {
+    const r = await runDepAction(ctx, legacy, 'install', {
+      version: body.version ?? null,
+      dryRun: body.dryRun === true,
+    });
+    return { ...r, aliasOf: `/api/deps/${legacy}/install`, legacyId: id };
+  }
+  need(INSTALL_IDS.includes(id), `不支持的安装目标: ${id}；可用: ${agentIds.join(', ')} 或 ${INSTALL_IDS.join(', ')}`);
+
+  // nodejs 走「只检测 + 引导」的旧语义（绝不 npm 安装 Node 本体）
+  const timeoutMs = Math.min(300000, Math.max(5000, Number(body.timeoutMs) || 180000));
+  const r = await installDependency({ cfg, id, timeoutMs });
+  if (r.installed) {
+    try {
+      const probe = await probeExecutors(cfg, { force: true });
+      r.executorProbe = {
+        ready: !!probe.ready,
+        ok: Object.entries(probe.probes || {}).filter(([, v]) => v && v.ok).map(([n]) => n),
+      };
+    } catch { /* 复探失败不影响安装结论 */ }
+  }
+  emit({
+    actor: 'human', type: 'setup.install', level: r.ok ? 'info' : 'warn',
+    message: `${id} → ${r.ok ? (r.already ? '已安装' : '安装成功') : (r.needManual ? '需人工安装' : '未安装')}`,
+  });
+  return { ok: !!r.ok, ...r };
+}
+
+// ── 9) POST /api/control/start|stop|scan —— 守护进程控制 ────────────
+async function controlStart(ctx) {
+  const cfg = ctx.cfg;
+  const body = bodyObject(ctx);
+  const d = readDaemonLock(cfg);
+  if (d.running) {
+    return {
+      ok: true, running: true, started: false,
+      daemon: daemonSummary(cfg),
+      note: `守护进程已在运行（pid=${d.pid}），无需重复启动`,
+    };
+  }
+  const script = path.join(cfg.codeRoot || cfg.home, 'scripts', 'hive.mjs');
+  const cmdLine = `${process.execPath} --no-warnings ${script} daemon`;
+  if (body.spawn === false) {
+    return {
+      ok: true, running: false, started: false, cmd: cmdLine,
+      daemon: daemonSummary(cfg),
+      note: '未实际拉起（spawn=false）：请在终端执行上面的命令，或由 DSH 插件托管守护进程',
+    };
+  }
+  if (!fs.existsSync(script)) {
+    return {
+      ok: false, running: false, started: false,
+      error: `找不到 ${script}`,
+      note: 'scripts/hive.mjs 缺失：检查代码完整性（或由 DSH 插件托管守护进程）',
+    };
+  }
+  if (d.stale) { try { fs.unlinkSync(d.lockPath); } catch { /* 残留锁清理失败不阻塞 */ } }
+  try {
+    const child = spawn(process.execPath, ['--no-warnings', script, 'daemon'], {
+      detached: true, stdio: 'ignore', windowsHide: true, cwd: cfg.codeRoot || cfg.home, env: process.env,
+    });
+    child.unref();
+    await delay(1500);
+    const after = readDaemonLock(cfg);
+    return {
+      ok: true,
+      running: !!after.running,
+      started: true,
+      pid: child.pid ?? null,
+      daemon: daemonSummary(cfg),
+      note: after.running
+        ? `守护进程已启动（pid=${after.pid}）`
+        : `已拉起进程（pid=${child.pid}），但 1.5s 内未看到锁文件；可能仍在初始化，稍后刷新状态`,
+    };
+  } catch (e) {
+    return {
+      ok: false, running: false, started: false,
+      error: `拉起失败: ${e.message}`,
+      note: `可手动执行：${cmdLine}`,
+    };
+  }
+}
+
+async function controlStop(ctx) {
+  const cfg = ctx.cfg;
+  const body = bodyObject(ctx);
+  const d = readDaemonLock(cfg);
+  if (!d.running) {
+    let cleaned = false;
+    if (d.stale) { try { fs.unlinkSync(d.lockPath); cleaned = true; } catch { /* noop */ } }
+    return {
+      ok: true, running: false, stopped: false, cleanedStaleLock: cleaned,
+      daemon: daemonSummary(cfg),
+      note: cleaned ? '没有活着的守护进程；已清理残留锁文件' : '守护进程未运行（无需停止）',
+    };
+  }
+  if (body.confirm !== true) {
+    throw new HttpError(409, `停止守护进程需要确认：请求体带 {"confirm": true}（pid=${d.pid}）`, { pid: d.pid });
+  }
+  const sig = body.force === true ? 'SIGKILL' : 'SIGTERM';
+  try { process.kill(d.pid, sig); }
+  catch (e) {
+    return {
+      ok: false, running: true, stopped: false,
+      error: `发送 ${sig} 失败: ${e.message}`,
+      daemon: daemonSummary(cfg),
+    };
+  }
+  await delay(800);
+  const after = readDaemonLock(cfg);
+  if (!after.running && after.stale) { try { fs.unlinkSync(after.lockPath); } catch { /* noop */ } }
+  return {
+    ok: true,
+    running: !!after.running,
+    stopped: !after.running,
+    signal: sig,
+    daemon: daemonSummary(cfg),
+    note: after.running
+      ? `已发送 ${sig}，进程仍在（Windows 下 SIGTERM 可能被忽略；可重试 force=true）`
+      : '守护进程已停止',
+  };
+}
+
+// 看板「巡检」按钮走这里（与 POST /api/scan 同一实现，语义更明确）
+function controlScan(ctx) {
+  return scan(ctx);
+}
+
 // ───────────────────────────── 路由表 ─────────────────────────────
 
 const ROUTES = [
@@ -969,6 +1697,26 @@ const ROUTES = [
   { method: 'POST', name: 'context.delete', pattern: /^\/api\/context\/([^/]+)\/delete\/?$/, handler: contextDelete },
 
   { method: 'GET', name: 'doctor', pattern: /^\/api\/doctor\/?$/, handler: doctor },
+
+  // ── 仪表盘（执行器 / 自动任务 / 成本 / 自检安装）────────────────────
+  { method: 'GET', name: 'agents', pattern: /^\/api\/agents\/?$/, handler: agents },
+  { method: 'GET', name: 'autopilots', pattern: /^\/api\/autopilots\/?$/, handler: autopilots },
+  { method: 'POST', name: 'autopilots.toggle', pattern: /^\/api\/autopilots\/([^/]+)\/toggle\/?$/, handler: autopilotToggle },
+  { method: 'POST', name: 'autopilots.run', pattern: /^\/api\/autopilots\/([^/]+)\/run\/?$/, handler: autopilotRun },
+  { method: 'GET', name: 'cost', pattern: /^\/api\/cost\/?$/, handler: costReport },
+  { method: 'GET', name: 'setup.doctor', pattern: /^\/api\/setup\/doctor\/?$/, handler: setupDoctor },
+  { method: 'POST', name: 'setup.install', pattern: /^\/api\/setup\/install\/?$/, handler: setupInstall },
+
+  // 可选 Agent 依赖：装 / 卸 / 升级 / 降级（全部由用户点击触发）
+  { method: 'GET', name: 'deps', pattern: /^\/api\/deps\/?$/, handler: depsEndpoint },
+  { method: 'POST', name: 'deps.check', pattern: /^\/api\/deps\/check\/?$/, handler: depsCheck },
+  { method: 'POST', name: 'deps.install', pattern: /^\/api\/deps\/([^/]+)\/install\/?$/, handler: depsInstall },
+  { method: 'POST', name: 'deps.update', pattern: /^\/api\/deps\/([^/]+)\/update\/?$/, handler: depsUpdate },
+  { method: 'POST', name: 'deps.uninstall', pattern: /^\/api\/deps\/([^/]+)\/uninstall\/?$/, handler: depsUninstall },
+
+  { method: 'POST', name: 'control.start', pattern: /^\/api\/control\/start\/?$/, handler: controlStart },
+  { method: 'POST', name: 'control.stop', pattern: /^\/api\/control\/stop\/?$/, handler: controlStop },
+  { method: 'POST', name: 'control.scan', pattern: /^\/api\/control\/scan\/?$/, handler: controlScan },
 
   { method: 'GET', name: 'artifact.file', pattern: /^\/api\/artifacts\/([^/]+)\/?$/, handler: artifactFile },
 ];

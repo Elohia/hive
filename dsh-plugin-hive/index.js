@@ -256,6 +256,13 @@ export function apply(ctx, config = {}) {
       // 5) Agent 工具
       try { registerTools(ctx, state); } catch (e) { log('warn', '工具注册失败:', e.message); }
 
+      // 6) 版本管理（装/升/降/卸都由用户点，永不自动改）
+      try {
+        const { createVersionManager } = await import('./version.mjs');
+        state.version = createVersionManager({ ctx, pkgRoot: PKG_ROOT, home, log });
+        state.version.scheduleAutoCheck();
+      } catch (e) { log('warn', '版本管理器初始化失败:', e.message); }
+
       log('info', `就绪：数据目录 ${home}，看板 ${MOUNT}/，引擎 ${state.engine.isRunning ? '运行中' : '停止'}`);
     }
 
@@ -314,6 +321,37 @@ async function handlePluginApi(req, res, raw, state) {
       const r = await state.engine.trigger(body.what || 'scan');
       return sendJson(res, 200, { ok: true, result: r });
     }
+
+    // ── 版本管理：让用户自己决定装 / 升 / 降 / 卸 ──
+    if (method === 'GET' && p === '/version') {
+      if (!state.version) return sendJson(res, 503, { error: '版本管理器未就绪' });
+      const force = u.searchParams.get('force') === '1';
+      const o = await state.version.overview({ force });
+      return sendJson(res, 200, { ok: true, ...o });
+    }
+    if (method === 'POST' && p === '/version/check') {
+      if (!state.version) return sendJson(res, 503, { error: '版本管理器未就绪' });
+      const o = await state.version.overview({ force: true });
+      return sendJson(res, 200, { ok: true, ...o });
+    }
+    if (method === 'POST' && p === '/version/apply') {
+      if (!state.version) return sendJson(res, 503, { error: '版本管理器未就绪' });
+      const body = await readBody(req);
+      if (!body.action) return sendJson(res, 400, { error: '缺少 action（install/update/downgrade/uninstall/enable/disable）' });
+      const r = await state.version.apply(body);
+      return sendJson(res, r.ok ? 200 : 500, r);
+    }
+    if (method === 'POST' && p === '/version/settings') {
+      if (!state.version) return sendJson(res, 503, { error: '版本管理器未就绪' });
+      const body = await readBody(req);
+      const s = state.version.saveSettings({
+        ...(typeof body.autoCheck === 'boolean' ? { autoCheck: body.autoCheck } : {}),
+        ...(body.repo ? { repo: String(body.repo) } : {}),
+        ...(body.autoCheckHours ? { autoCheckHours: Number(body.autoCheckHours) } : {}),
+      });
+      return sendJson(res, 200, { ok: true, settings: s });
+    }
+
     return sendJson(res, 404, { error: '未知的插件接口: ' + p });
   } catch (e) {
     return sendJson(res, 500, { error: String(e?.message || e) });

@@ -1,0 +1,91 @@
+# CI：语法 + 两侧自测 + 独立看板冒烟
+#
+# 说明（诚实版）：这是随 0.1.0 一起提交的 **scaffold**。作者机器上用的是 Windows + Node 24，
+# 这里刻意只选 ubuntu-latest + Node 24 跑与平台无关的四件事：
+#   1) 全部入口/脚本的 `node --check`（不执行、不联网）
+#   2) `scripts/selftest-host.mjs`（假 ctx + 临时 DSH_HOME，19 项断言）
+#   3) `scripts/check-client.mjs`（node:vm 桩浏览器环境，68 项断言）
+#   4) 独立看板冒烟（临时 HIVE_HOME 起服务，探 /api/health 与 /）
+# 首次推送到 GitHub 后请按实际结果调整（例如某个传感器在新 runner 上超时），不要盲目信任本文件。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: node 24 · syntax + selftest
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Versions
+        run: |
+          node -v
+          npm -v
+
+      # 入口三件 + 维护脚本：只解析，不执行
+      - name: Syntax check (entry + scripts)
+        run: |
+          set -euo pipefail
+          for f in index.js client.js engine.mjs scripts/*.mjs; do
+            echo "check $f"
+            node --check "$f"
+          done
+
+      # 内置运行时是拷贝进来的（scripts/sync-runtime.mjs），一并保证语法可解析
+      - name: Syntax check (bundled runtime)
+        run: |
+          set -euo pipefail
+          n=0
+          while IFS= read -r f; do
+            node --check "$f"
+            n=$((n + 1))
+          done < <(find runtime/src -name '*.mjs' -type f | sort)
+          echo "checked $n runtime modules"
+
+      - name: Host self-test (19 assertions, fake ctx)
+        run: node --no-warnings scripts/selftest-host.mjs
+
+      - name: Client self-test (68 assertions, vm stub)
+        run: node --no-warnings scripts/check-client.mjs
+
+      # 不装 DSH 也能起看板：临时 HIVE_HOME + 临时端口
+      - name: Standalone dashboard smoke
+        run: |
+          set -euo pipefail
+          HOME_DIR="$(mktemp -d)"
+          mkdir -p "$HOME_DIR/config"
+          cp runtime/config-defaults/*.json "$HOME_DIR/config/"
+          HIVE_HOME="$HOME_DIR" node --no-warnings runtime/src/server/http.mjs --port 8899 &
+          SRV=$!
+          ok=0
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8899/api/health > /dev/null 2>&1; then ok=1; break; fi
+            sleep 1
+          done
+          if [ "$ok" != "1" ]; then
+            echo "::error::standalone dashboard did not answer /api/health within 30s"
+            kill "$SRV" 2>/dev/null || true
+            exit 1
+          fi
+          echo '--- /api/health ---'
+          curl -fsS http://127.0.0.1:8899/api/health
+          echo
+          echo '--- / ---'
+          curl -fsS -o /dev/null -w 'index %{http_code} %{size_download}B\n' http://127.0.0.1:8899/
+          kill "$SRV" 2>/dev/null || true

@@ -69,6 +69,10 @@
     <button class="tab" data-tab="tasks" role="tab">任务<span class="badge" id="badge-tasks">0</span></button>
     <button class="tab" data-tab="logs" role="tab">日志</button>
     <button class="tab" data-tab="context" role="tab">上下文</button>
+    <button class="tab" data-tab="agents" role="tab">执行器</button>
+    <button class="tab" data-tab="autopilots" role="tab">自动任务<span class="badge" id="badge-autopilots">0</span></button>
+    <button class="tab" data-tab="cost" role="tab">成本</button>
+    <button class="tab" data-tab="setup" role="tab">自检</button>
   </nav>
 
   <main class="main" id="main">
@@ -189,6 +193,50 @@
         <button class="btn" type="button" id="cf-cancel">取消</button>
       </form>
       <div class="list" id="context-list"></div>
+    </section>
+
+    <!-- ═════════ 执行器 ═════════ -->
+    <section class="panel" id="panel-agents" data-panel="agents" role="tabpanel" hidden>
+      <div class="toolbar">
+        <span class="hint">执行器 = 真正干活的模型 / 进程。可用性来自 probe()，统计来自 runs 表（近 24 小时）。</span>
+        <button class="btn" id="btn-refresh-agents">刷新</button>
+      </div>
+      <div id="agents-body"></div>
+    </section>
+
+    <!-- ═════════ 自动任务 ═════════ -->
+    <section class="panel" id="panel-autopilots" data-panel="autopilots" role="tabpanel" hidden>
+      <div class="toolbar">
+        <span class="hint">脉冲 = 系统自己的巡检节奏（扫描 / 判定 / 看门狗 / 日报…）。暂停只停止自动跑，周期与历史保留。</span>
+        <button class="btn" id="btn-refresh-autopilots">刷新</button>
+        <button class="btn" id="btn-daemon-start">启动守护进程</button>
+        <button class="btn danger" id="btn-daemon-stop">停止</button>
+      </div>
+      <div id="autopilots-body"></div>
+    </section>
+
+    <!-- ═════════ 成本 ═════════ -->
+    <section class="panel" id="panel-cost" data-panel="cost" role="tabpanel" hidden>
+      <div class="toolbar">
+        <div class="segmented" id="cost-range" role="group" aria-label="统计窗口">
+          <button class="seg" data-days="1">今天</button>
+          <button class="seg is-active" data-days="7">近 7 天</button>
+          <button class="seg" data-days="30">近 30 天</button>
+        </div>
+        <span class="hint">成本来自 runs.cost_cny（按 config 单价估算），可能与实际账单有偏差。</span>
+        <button class="btn" id="btn-refresh-cost">刷新</button>
+      </div>
+      <div id="cost-body"></div>
+    </section>
+
+    <!-- ═════════ 自检与依赖 ═════════ -->
+    <section class="panel" id="panel-setup" data-panel="setup" role="tabpanel" hidden>
+      <div class="toolbar">
+        <span class="hint">上段环境自检（PASS / WARN / FAIL + 修复建议）；下段可选 Agent 依赖：装 / 更新 / 降级 / 卸载，全部由你点击触发，系统绝不自动装。</span>
+        <button class="btn primary" id="btn-setup-run">重新自检</button>
+      </div>
+      <div id="setup-body"></div>
+      <div id="deps-block" style="margin-top:12px"></div>
     </section>
 
   </main>

@@ -1,0 +1,37 @@
+# ── 依赖与构建产物 ────────────────────────────────────────────────
+node_modules/
+.pnpm-store/
+
+# ── 运行时数据（正常应该在 $DSH_HOME/hive/，不在包目录里）──────────
+data/
+tmp/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# ── 日志与缓存 ────────────────────────────────────────────────────
+*.log
+logs/
+.npm/
+.pnpm-debug.log
+*.tsbuildinfo
+
+# ── 编辑器 / 系统 ─────────────────────────────────────────────────
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── 本地私货（别提交）─────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.local
+*.bak
+*.orig
+*.rej

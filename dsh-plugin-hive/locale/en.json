@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "HIVE · Proactive Agent",
+    "description": "A proactive teammate in your sidebar: senses your mailbox, repos, docs and schedules, turns them into an Inbox, grades every item L1–L5, runs what it can on its own, and asks you only for real decisions. Bundles its own runtime, borrows your configured DSH model, and works out of the box."
+  }
+}
