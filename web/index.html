@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>HIVE 蜂巢 · 控制台</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath fill='%23f5b942' d='M16 2.5l11.7 6.75v13.5L16 29.5 4.3 22.75V9.25z'/%3E%3Cpath fill='%230a0e13' d='M16 8.2l6.7 3.87v7.73L16 23.7l-6.7-3.9v-7.73z'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="./style.css">
+</head>
+<body>
+<div class="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <svg class="logo" viewBox="0 0 32 32" aria-hidden="true">
+        <path d="M16 2.5l11.7 6.75v13.5L16 29.5 4.3 22.75V9.25z" fill="none" stroke="currentColor" stroke-width="1.6"/>
+        <path d="M16 8.2l6.7 3.87v7.73L16 23.7l-6.7-3.9v-7.73z" fill="currentColor" opacity=".18"/>
+        <path d="M16 8.2l6.7 3.87v7.73L16 23.7l-6.7-3.9v-7.73z" fill="none" stroke="currentColor" stroke-width="1.3"/>
+      </svg>
+      <div class="brand-text">
+        <h1>HIVE <span>蜂巢</span></h1>
+        <p>主动服务型超级智能体 · 控制台</p>
+      </div>
+    </div>
+
+    <div class="metrics" id="metrics" aria-live="polite">
+      <button class="metric" data-goto="doctor" id="m-health" title="环境自检">
+        <span class="metric-label">健康状态</span>
+        <span class="metric-value"><i class="dot" id="health-dot"></i><span id="health-text">连接中</span></span>
+        <span class="metric-sub" id="health-sub">v—</span>
+      </button>
+      <button class="metric" data-goto="logs" id="m-budget" title="今日花费 / 日预算">
+        <span class="metric-label">今日花费</span>
+        <span class="metric-value" id="budget-text">¥0.00</span>
+        <span class="metric-sub"><span class="bar"><i id="budget-bar" style="width:0%"></i></span><span id="budget-ratio">0% / ¥8</span></span>
+      </button>
+      <button class="metric" data-goto="tasks" id="m-running" title="运行中 / 排队">
+        <span class="metric-label">运行中任务</span>
+        <span class="metric-value" id="running-text">0</span>
+        <span class="metric-sub" id="queued-text">排队 0</span>
+      </button>
+      <button class="metric" data-goto="outbox" id="m-outbox" title="待我拍板">
+        <span class="metric-label">待我拍板</span>
+        <span class="metric-value" id="outbox-text">0</span>
+        <span class="metric-sub" id="outbox-sub">无待办审批</span>
+      </button>
+      <button class="metric" data-goto="inbox" title="收件箱">
+        <span class="metric-label">收件箱</span>
+        <span class="metric-value" id="inbox-text">0</span>
+        <span class="metric-sub" id="inbox-sub">等待处理的事项</span>
+      </button>
+    </div>
+
+    <div class="top-actions">
+      <span class="conn" id="conn" title="SSE 实时连接">
+        <i class="dot" id="conn-dot"></i><span id="conn-text">连接中…</span>
+      </span>
+      <button class="btn" id="btn-doctor">环境自检</button>
+      <button class="btn primary" id="btn-scan">立即巡检</button>
+    </div>
+  </header>
+
+  <div class="banner" id="banner" hidden></div>
+
+  <nav class="tabs" id="tabs" role="tablist" aria-label="视图切换">
+    <button class="tab is-active" data-tab="inbox" role="tab">收件箱<span class="badge" id="badge-inbox">0</span></button>
+    <button class="tab" data-tab="outbox" role="tab">待拍板<span class="badge warn" id="badge-outbox">0</span></button>
+    <button class="tab" data-tab="tasks" role="tab">任务<span class="badge" id="badge-tasks">0</span></button>
+    <button class="tab" data-tab="logs" role="tab">日志</button>
+    <button class="tab" data-tab="context" role="tab">上下文</button>
+  </nav>
+
+  <main class="main" id="main">
+
+    <!-- ═════════ 收件箱 ═════════ -->
+    <section class="panel is-active" id="panel-inbox" data-panel="inbox" role="tabpanel">
+      <div class="toolbar">
+        <input id="f-q" class="input grow" type="search" placeholder="搜索标题 / 正文…" autocomplete="off" aria-label="搜索事项">
+        <select id="f-bucket" class="input" aria-label="栏位">
+          <option value="inbox">收件箱</option>
+          <option value="active">进行中</option>
+          <option value="archive">归档</option>
+          <option value="">全部栏位</option>
+        </select>
+        <select id="f-source" class="input" aria-label="来源"><option value="">全部来源</option></select>
+        <select id="f-status" class="input" aria-label="状态"><option value="">全部状态</option></select>
+        <select id="f-level" class="input" aria-label="自主等级">
+          <option value="">全部等级</option>
+          <option value="1">L1 整理</option>
+          <option value="2">L2 建议</option>
+          <option value="3">L3 中间件</option>
+          <option value="4">L4 确认后落地</option>
+          <option value="5">L5 端到端</option>
+        </select>
+        <button class="btn" id="btn-refresh-inbox" title="重新拉取">刷新</button>
+        <button class="btn primary" id="btn-new-item">+ 投递事项</button>
+      </div>
+
+      <form class="newitem" id="new-item-form" hidden autocomplete="off">
+        <input id="ni-title" class="input grow" placeholder="一句话描述这件事（必填）" required maxlength="300">
+        <select id="ni-kind" class="input" aria-label="类型">
+          <option value="todo">待办</option>
+          <option value="issue">问题</option>
+          <option value="opportunity">机会</option>
+          <option value="decision">决策</option>
+          <option value="risk">风险</option>
+          <option value="fyi">情报</option>
+        </select>
+        <select id="ni-domain" class="input" aria-label="领域">
+          <option value="">无领域</option>
+          <option value="work">工作</option>
+          <option value="trade">交易</option>
+          <option value="startup">创业</option>
+          <option value="ai">AI</option>
+          <option value="content">内容</option>
+          <option value="life">生活</option>
+          <option value="family">家庭</option>
+        </select>
+        <button class="btn primary" type="submit" id="ni-submit">投递</button>
+        <button class="btn" type="button" id="ni-cancel">取消</button>
+      </form>
+
+      <div class="list" id="inbox-list"></div>
+    </section>
+
+    <!-- ═════════ 待拍板 ═════════ -->
+    <section class="panel" id="panel-outbox" data-panel="outbox" role="tabpanel" hidden>
+      <div class="toolbar">
+        <div class="segmented" id="outbox-filter" role="group" aria-label="审批状态">
+          <button class="seg is-active" data-status="pending">待拍板</button>
+          <button class="seg" data-status="">全部</button>
+          <button class="seg" data-status="approved">已批准</button>
+          <button class="seg" data-status="rejected">已拒绝</button>
+          <button class="seg" data-status="expired">已过期</button>
+        </div>
+        <span class="hint">审批是唯一的副作用闸门：发信 / 发布 / 删除 / 花钱 / 部署必须在这里放行。</span>
+      </div>
+      <div class="list" id="outbox-list"></div>
+    </section>
+
+    <!-- ═════════ 任务 ═════════ -->
+    <section class="panel" id="panel-tasks" data-panel="tasks" role="tabpanel" hidden>
+      <div class="toolbar">
+        <div class="segmented" id="task-filter" role="group" aria-label="任务状态">
+          <button class="seg is-active" data-status="">全部</button>
+          <button class="seg" data-status="queued">排队</button>
+          <button class="seg" data-status="running">运行中</button>
+          <button class="seg" data-status="succeeded">成功</button>
+          <button class="seg" data-status="failed">失败</button>
+          <button class="seg" data-status="cancelled">已取消</button>
+        </div>
+        <button class="btn" id="btn-refresh-tasks">刷新</button>
+      </div>
+      <div class="list" id="tasks-list"></div>
+    </section>
+
+    <!-- ═════════ 日志 ═════════ -->
+    <section class="panel" id="panel-logs" data-panel="logs" role="tabpanel" hidden>
+      <div class="toolbar">
+        <div class="segmented" id="log-filter" role="group" aria-label="日志级别">
+          <button class="seg is-active" data-level="">全部</button>
+          <button class="seg" data-level="info">信息</button>
+          <button class="seg" data-level="warn">警告</button>
+          <button class="seg" data-level="error">错误</button>
+        </div>
+        <label class="switch"><input type="checkbox" id="log-pause"> 暂停实时</label>
+        <button class="btn" id="btn-log-refresh">刷新</button>
+        <button class="btn" id="btn-log-clear">清屏</button>
+        <span class="hint" id="log-count"></span>
+      </div>
+      <div class="list loglist" id="logs-list"></div>
+    </section>
+
+    <!-- ═════════ 上下文 ═════════ -->
+    <section class="panel" id="panel-context" data-panel="context" role="tabpanel" hidden>
+      <div class="toolbar">
+        <span class="hint">个人上下文：让系统知道「这件事对我意味着什么」。只在只读/建议类动作里使用，不进对外动作。</span>
+        <button class="btn primary" id="btn-new-fact">+ 新增事实</button>
+        <button class="btn" id="btn-refresh-context">刷新</button>
+      </div>
+      <form class="newitem" id="fact-form" hidden autocomplete="off">
+        <input id="cf-category" class="input" placeholder="分类（工作/家庭/健康/偏好…）" maxlength="40">
+        <input id="cf-key" class="input grow" placeholder="键（必填，如 作息/当前项目）" required maxlength="80">
+        <input id="cf-value" class="input grow" placeholder="值（必填）" required maxlength="2000">
+        <input id="cf-evidence" class="input" placeholder="证据（可选，如会话/文件/行号）" maxlength="500">
+        <input id="cf-confidence" class="input narrow" type="number" min="0" max="1" step="0.05" value="0.8" aria-label="置信度">
+        <button class="btn primary" type="submit" id="cf-submit">保存</button>
+        <button class="btn" type="button" id="cf-cancel">取消</button>
+      </form>
+      <div class="list" id="context-list"></div>
+    </section>
+
+  </main>
+
+  <footer class="footer">
+    <span>HIVE <b id="foot-version">v—</b></span>
+    <span class="sep">·</span>
+    <span id="foot-addr">127.0.0.1</span>
+    <span class="sep">·</span>
+    <span>数据源 <code>data/hive.db</code>（SQLite WAL，单一事实源）</span>
+    <span class="sep">·</span>
+    <span>离线可用：零 CDN / 零外网请求</span>
+    <span class="foot-right" id="foot-time"></span>
+  </footer>
+
+</div>
+
+<div class="drawer-mask" id="drawer-mask" hidden></div>
+<aside class="drawer" id="drawer" hidden aria-label="环境自检">
+  <header class="drawer-head">
+    <h2>环境自检 · doctor</h2>
+    <button class="icon-btn" id="drawer-close" aria-label="关闭">✕</button>
+  </header>
+  <div class="drawer-body" id="drawer-body"></div>
+</aside>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
+<noscript>
+  <div class="noscript">看板需要 JavaScript。请用支持 ES2020 的浏览器打开，或改用 CLI：<code>node scripts/hive.mjs inbox</code></div>
+</noscript>
+
+<script type="module" src="./app.js"></script>
+</body>
+</html>
