@@ -49,6 +49,10 @@
     "退信", "邮件被退回", "PostMaster", "mailer-daemon", "no-reply", "noreply",
     "Delivery Status Notification", "undeliverable", "退订", "unsubscribe"
   ],
+  "low_value_patterns": [
+    "uv.lock", "package-lock.json", "pnpm-lock.yaml", "yarn.lock",
+    "supervisor_gui_heartbeat", "sentinel_heartbeat", "heartbeat.json"
+  ],
   "side_effect_actions": ["send_external", "publish", "delete", "spend", "deploy"],
   "write_allowlist_dirs": [
     "D:\\hive\\data\\work",

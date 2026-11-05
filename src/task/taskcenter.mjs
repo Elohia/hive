@@ -35,8 +35,11 @@ export function refineKind(rawKind, title = '', body = '') {
   const cfg = loadConfig();
   const alias = cfg.policies.kind_alias || {};
   const noise = cfg.policies.noise_patterns || [];
+  const lowValue = cfg.policies.low_value_patterns || [];
   const text = `${title}\n${body || ''}`;
   if (noise.some((p) => text.includes(p))) return { kind: 'fyi', urgency: 1, impact: 1, noisy: true };
+  // 低价值：锁文件/心跳类变更不打扰人，但也不是「噪声垃圾」，降权后留档
+  if (lowValue.some((p) => title.includes(p))) return { kind: 'fyi', urgency: 1, impact: 1, noisy: true, lowValue: true };
   const k = alias[rawKind] || rawKind;
   const known = Object.keys(cfg.policies.kind_defaults || {});
   if (known.includes(k)) return { kind: k, noisy: false };
