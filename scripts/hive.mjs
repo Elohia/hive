@@ -485,6 +485,24 @@ async function cmdServe() {
   return new Promise(() => {});
 }
 
+// ================= 命令：context =================
+async function cmdContext() {
+  const b = await import('../src/context/builder.mjs');
+  if (flag('seed')) {
+    const n = b.seedBaselineFacts();
+    out(`✓ 种入基线事实 ${n} 条`);
+  }
+  if (flag('refresh')) {
+    out('… 归纳中（调一次便宜模型）');
+    const r = await b.refreshContext({ hours: Number(flag('hours', 168)), dryRun: !!flag('dry-run') });
+    if (!r.ok) { out('✗ ' + r.error); return 1; }
+    out(`✓ 写入 ${r.wrote} 项，花费 ¥${r.costCny ?? 0}`);
+    if (flag('dry-run')) out(JSON.stringify(r.summary, null, 2));
+  }
+  out(b.renderContext());
+  return 0;
+}
+
 // ================= 命令：stats =================
 async function cmdStats() {
   const s = dbStats();
@@ -521,6 +539,8 @@ function usage() {
   retry  <task-id> [--now]  重试任务
   events [--limit 40]       看事件流
   doctor                    环境自检
+  context [--seed] [--refresh] [--hours 168] [--dry-run]
+                            个人上下文：种基线 / 归纳刷新 / 打印
   stats                     汇总
   seed                      重建脉冲表
 `);
@@ -535,7 +555,7 @@ const COMMANDS = {
     const { decideApproval } = await import('../src/task/taskcenter.mjs');
     decideApproval(id, { decision: 'rejected', note: flag('note', ''), by: 'human' });
     out('✓ 已拒绝并归档'); return 0; },
-  retry: cmdRetry, doctor: cmdDoctor, stats: cmdStats,
+  retry: cmdRetry, doctor: cmdDoctor, stats: cmdStats, context: cmdContext,
   work: async () => { await drainAndReport(); return 0; },
   seed: async () => { const { seedPulses, allPulses } = await import('../src/task/pulse.mjs'); seedPulses();
     table(allPulses().map((p) => ({ id: p.id, spec: p.spec, next: p.next_run_at || '', last: p.last_status || '' })), ['id', 'spec', 'next', 'last']); return 0; },

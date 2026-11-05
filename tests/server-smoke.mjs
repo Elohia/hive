@@ -65,7 +65,8 @@ if (!ARGS.real) {
   const cfg = JSON.parse(fs.readFileSync(path.join(ROOT, 'config', 'hive.json'), 'utf8'));
   fs.writeFileSync(path.join(tmpHome, 'config', 'hive.json'), JSON.stringify(cfg, null, 2), 'utf8');
   fs.copyFileSync(path.join(ROOT, 'config', 'policies.json'), path.join(tmpHome, 'config', 'policies.json'));
-  fs.copyFileSync(path.join(ROOT, 'VERSION'), path.join(tmpHome, 'VERSION'));
+  // 故意写一个假的 VERSION 进临时 home：如果代码错从 HOME 读版本，断言会立刻抓到 0.0.0 / 9.9.9
+  fs.writeFileSync(path.join(tmpHome, 'VERSION'), '9.9.9-should-not-be-used\n', 'utf8');
   fs.mkdirSync(path.join(tmpHome, 'prompts'), { recursive: true });
   process.env.HIVE_HOME = tmpHome;
 }
@@ -142,9 +143,14 @@ async function waitFor(fn, timeoutMs = 5000, interval = 50) {
 // ═══════════════════════════════════════════════════════════════════
 try {
   // ── 0. 启动 ─────────────────────────────────────────────────────
-  const srv = await startServer({ port: ARGS.port, logger, webRoot: path.join(ROOT, 'web') });
+  // 注意：这里【不传 webRoot】，故意让服务自己解析 —— 用来证明静态根跟代码根走，
+  // 不随 HIVE_HOME（临时数据目录）漂移。
+  const srv = await startServer({ port: ARGS.port, logger });
   started.push(srv);
   ok('server.start', srv.port > 0, `url=${srv.url}`);
+  ok('server.web-root-follows-code',
+    path.resolve(srv.webRoot) === path.join(ROOT, 'web'),
+    `webRoot=${srv.webRoot}`);
 
   // 确认真的落在隔离库（非 --real 时路径必须在临时目录里）
   ok('server.isolated-db', ARGS.real || String(cfg.resolved.db).startsWith(tmpHome), cfg.resolved.db);
@@ -152,7 +158,10 @@ try {
   // ── 1. 静态页（无 CDN、离线可用）────────────────────────────────
   await T('static.index', async () => {
     const r = await req('GET', '/');
+    const source = fs.readFileSync(path.join(ROOT, 'web', 'index.html'), 'utf8');
     ok('static.index', r.status === 200 && /text\/html/.test(r.headers.get('content-type') || ''), `status=${r.status}`);
+    ok('static.index.code-root', r.status === 200 && r.text.length === source.length && r.text.includes('HIVE'),
+      `served=${r.text.length}B source=${source.length}B`);
     ok('static.index.head', r.text.includes('HIVE') && r.text.includes('收件箱'));
     const css = await req('GET', '/style.css');
     ok('static.css', css.status === 200 && css.text.includes('--amber'), `status=${css.status}`);
@@ -168,12 +177,16 @@ try {
   });
 
   // ── 2. 健康 / 概览 ─────────────────────────────────────────────
+  const versionFile = fs.readFileSync(path.join(ROOT, 'VERSION'), 'utf8').trim();
   await T('api.health', async () => {
     const r = await req('GET', '/api/health');
     ok('api.health.status', r.status === 200, `status=${r.status}`);
     ok('api.health.shape', r.data && r.data.ok === true && r.data.db && r.data.db.ok === true,
       `version=${r.data?.version} db=${r.data?.db?.ok}`);
     ok('api.health.server', r.data?.server?.port === srv.port, `port=${r.data?.server?.port}`);
+    // 版本必须来自代码根 VERSION，而不是 HOME（换 HIVE_HOME 后 home 里没有 VERSION）
+    ok('api.health.version', r.data?.version === versionFile && r.data.version !== '0.0.0',
+      `got=${r.data?.version} expect=${versionFile}`);
   });
 
   let overviewInitial = null;
@@ -181,6 +194,7 @@ try {
     const r = await req('GET', '/api/overview');
     overviewInitial = r.data;
     ok('api.overview.status', r.status === 200, `status=${r.status}`);
+    ok('api.overview.version', r.data?.version === versionFile, `got=${r.data?.version}`);
     const c = r.data?.counts || {};
     ok('api.overview.counts', ['inbox', 'outbox', 'queued', 'running', 'failed24h'].every((k) => typeof c[k] === 'number'),
       JSON.stringify(c));
@@ -343,14 +357,23 @@ try {
     ok('api.context.delete', del.status === 200 && del.data?.deleted === f2.id);
   });
 
-  // ── 9. 巡检（注册表可能未就绪 → 必须优雅降级）────────────────
+  // ── 9. 巡检（注册表就绪则真跑；未就绪必须优雅降级）────────────
   await T('api.scan', async () => {
     const list = await req('POST', '/api/scan?list=1', {});
     ok('api.scan.list', list.status === 200 && typeof list.data?.ok === 'boolean' && Array.isArray(list.data?.sensors),
       `ok=${list.data?.ok} reason=${list.data?.reason || ''} sensors=${JSON.stringify(list.data?.sensors || [])}`);
-    const run = await req('POST', '/api/scan?timeoutMs=2000', {});
-    ok('api.scan.run', run.status === 200 && typeof run.data?.ok === 'boolean',
-      `ok=${run.data?.ok} reason=${run.data?.reason || ''} created=${run.data?.created} seen=${run.data?.seen}`);
+    const sensorsReady = fs.existsSync(path.join(ROOT, 'src', 'sensors', 'index.mjs'));
+    if (sensorsReady) {
+      // 只点名一个不存在的 sensor：走完解析/调度/upsert 全链路但零真实 IO，快且可重复
+      const run = await req('POST', '/api/scan?source=__none__', {});
+      ok('api.scan.run', run.status === 200 && run.data?.ok === true && run.data?.scanned === 0,
+        `ok=${run.data?.ok} scanned=${run.data?.scanned} created=${run.data?.created}`);
+      ok('api.scan.list.names', list.data.ok === true && list.data.sensors.length > 0, `sensors=${list.data.sensors.length}`);
+    } else {
+      const run = await req('POST', '/api/scan?timeoutMs=2000', {});
+      ok('api.scan.degraded', run.status === 200 && run.data?.ok === false && run.data?.reason === 'sensor registry not ready',
+        `ok=${run.data?.ok} reason=${run.data?.reason || ''}`);
+    }
   });
 
   // ── 10. 环境自检（执行器/传感器可能未就绪 → 降级不崩）─────────
@@ -359,12 +382,13 @@ try {
     ok('api.doctor.status', r.status === 200, `status=${r.status}`);
     ok('api.doctor.shape', r.data && typeof r.data.ok === 'boolean' && r.data.db && r.data.channels && r.data.config,
       `ok=${r.data?.ok} reason=${r.data?.reason || ''}`);
-    const registryMissing = !fs.existsSync(path.join(cfg.home, 'src', 'executors', 'index.mjs'));
-    if (registryMissing) {
+    // 注册表在【代码根】，不在 HIVE_HOME —— 换数据目录后 doctor 仍必须探测到执行器
+    const registryExists = fs.existsSync(path.join(ROOT, 'src', 'executors', 'index.mjs'));
+    if (!registryExists) {
       ok('api.doctor.degraded', r.data.ok === false && r.data.reason === 'executor registry not ready' && r.data.executors?.ready === false,
         r.data.reason || '');
     } else {
-      ok('api.doctor.executors', typeof r.data.executors?.ready === 'boolean' && !!r.data.executors.probes,
+      ok('api.doctor.executors', r.data.executors?.ready === true && Object.keys(r.data.executors?.probes || {}).length > 0,
         `ready=${r.data.executors?.ready} probes=${Object.keys(r.data.executors?.probes || {}).length}`);
     }
     ok('api.doctor.channels', Object.keys(r.data?.channels || {}).length >= 4 && 'git' in (r.data?.channels || {}));
@@ -399,11 +423,12 @@ try {
     ok('api.404.static', static404.status === 404);
   });
 
-  // ── 13. token 鉴权（第二个实例，独立配置）────────────────────
+  // ── 13. token 鉴权（第二个实例，独立配置）+ close 幂等 / SSE 排空 ──
   await T('token.auth', async () => {
     const tokenCfg = { ...cfg, server: { ...(cfg.server || {}), token: 'smoke-token-123' } };
-    const s2 = await startServer({ cfg: tokenCfg, port: 0, logger, webRoot: path.join(ROOT, 'web') });
+    const s2 = await startServer({ cfg: tokenCfg, port: 0, logger });
     started.push(s2);
+    ok('token.no-webroot-override', path.resolve(s2.webRoot) === path.join(ROOT, 'web'), s2.webRoot);
     const noToken = await fetch(s2.url.replace(/\/$/, '') + '/api/health');
     ok('token.reject', noToken.status === 401, `status=${noToken.status}`);
     const wrong = await fetch(s2.url.replace(/\/$/, '') + '/api/health', { headers: { 'X-Hive-Token': 'wrong' } });
@@ -414,7 +439,26 @@ try {
     ok('token.accept-query', q.status === 200, `status=${q.status}`);
     const idx = await fetch(s2.url.replace(/\/$/, '') + '/');
     ok('token.static-open', idx.status === 200, '静态页不校验 token（页面本身无数据）');
+
+    // close 必须先排空 SSE 客户端，且重复调用安全（旧实现在这里 uv 断言崩溃）
+    const sse2 = await openSSE('/api/stream?token=smoke-token-123', s2.port);
+    const hello2 = await waitFor(() => sse2.text.includes('"type":"hello"'), 4000);
+    ok('token.sse-connected', hello2);
+    const t0 = Date.now();
     await s2.close();
+    const ms = Date.now() - t0;
+    ok('server.close.drains-sse', ms < 3000, `${ms}ms`);
+    sse2.close();
+    let twice = false;
+    try {
+      await Promise.all([s2.close(), s2.close()]); // 并发重复 close 也必须安全
+      await s2.close();
+      twice = true;
+    } catch (e) {
+      twice = false;
+      ok('server.close.idempotent', false, e.message);
+    }
+    ok('server.close.idempotent', twice);
   });
 
   // ── 14. CLI ───────────────────────────────────────────────────

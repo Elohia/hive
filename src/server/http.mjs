@@ -262,7 +262,13 @@ async function handle(req, res, env) {
  */
 export function createHiveServer(opts = {}) {
   const cfg = opts.cfg || loadConfig();
-  const webRoot = path.resolve(opts.webRoot || path.join(cfg.home, 'web'));
+  // 静态根永远跟【代码根】走，不跟 HIVE_HOME 走：
+  //   HIVE_HOME 只改数据/配置目录，代码资产（web/）留在源码树里。
+  const webRoot = path.resolve(
+    opts.webRoot
+    || cfg.resolved?.web
+    || path.join(cfg.codeRoot || cfg.home, 'web')
+  );
   const logger = typeof opts.logger === 'function' ? opts.logger : (line) => console.log(line);
   const runtime = {
     startedAt: Date.now(),
@@ -335,17 +341,34 @@ export function startServer(opts = {}) {
       runtime.port = addr && typeof addr === 'object' ? addr.port : port;
       runtime.host = host;
       const url = `http://${host.includes(':') ? `[${host}]` : host}:${runtime.port}/`;
-      const close = () => new Promise((done) => {
-        closeAll();
-        let settled = false;
-        const finish = () => { if (!settled) { settled = true; done(); } };
-        try { server.close(finish); } catch { finish(); }
-        // 兜底：残留 keep-alive 连接不许拖住关闭
-        setTimeout(() => {
-          try { server.closeAllConnections?.(); } catch { /* noop */ }
-          finish();
-        }, 1500).unref?.();
-      });
+
+      // close 必须：① 幂等（重复调用返回同一个 promise，绝不重复 close 句柄）
+      //           ② 先结束所有 SSE 客户端 ③ server.close() 回调只结算一次
+      //           ④ 兜底强拆残留连接（否则 keep-alive / SSE 会拖住进程）
+      let closing = null;
+      const close = () => {
+        if (closing) return closing;
+        closing = new Promise((done) => {
+          let settled = false;
+          let guard = null;
+          const finish = () => {
+            if (settled) return;
+            settled = true;
+            if (guard) clearTimeout(guard);
+            done();
+          };
+          try { closeAll(); } catch { /* SSE 清理失败不阻断关闭 */ }
+          try { server.close(() => finish()); }
+          catch { finish(); }
+          // 兜底：1.5s 后强制断开仍在挂着的连接，再结算（只结算一次）
+          guard = setTimeout(() => {
+            try { server.closeAllConnections?.(); } catch { /* noop */ }
+            finish();
+          }, 1500);
+          if (guard && typeof guard.unref === 'function') guard.unref();
+        });
+        return closing;
+      };
       resolve({ server, cfg, webRoot, runtime, port: runtime.port, host, url, close });
     };
     server.once('error', onError);

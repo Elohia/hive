@@ -78,12 +78,16 @@ function withTimeout(promise, ms, label) {
   return Promise.race([promise, guard]).finally(() => { if (timer) clearTimeout(timer); });
 }
 
-let _version = null;
+// 版本号：永远取配置模块给的「代码根 VERSION」（cfg.version），
+// 不自己从 cfg.home 读 —— 换 HIVE_HOME 后 home 里没有 VERSION，会退化成 0.0.0。
 function readVersion(cfg) {
-  if (_version) return _version;
-  try { _version = fs.readFileSync(path.join(cfg.home, 'VERSION'), 'utf8').trim() || '0.0.0'; }
-  catch { _version = '0.0.0'; }
-  return _version;
+  if (cfg && typeof cfg.version === 'string' && cfg.version) return cfg.version;
+  const roots = [cfg?.codeRoot, cfg?.resolved?.codeRoot].filter(Boolean);
+  for (const root of roots) {
+    try { return fs.readFileSync(path.join(root, 'VERSION'), 'utf8').trim() || '0.0.0'; }
+    catch { /* 继续找下一个 */ }
+  }
+  return '0.0.0';
 }
 
 // 探测子命令一律异步并行（Windows 上每次 spawn 约 100–600ms，串行会让 /api/doctor 变成 4s+）
@@ -120,7 +124,8 @@ function inClause(arr) { return arr.map(() => '?').join(','); }
 
 /** 动态加载「可能还不存在 / 正在被别处写」的模块（按 mtime 破缓存，写完可热生效） */
 async function loadModule(cfg, relPath) {
-  const abs = path.join(cfg.home, relPath);
+  // 代码资产（src/**）永远跟代码根走；HIVE_HOME 只改数据/配置目录。
+  const abs = path.join(cfg.codeRoot || cfg.home, relPath);
   let st = null;
   try { st = fs.statSync(abs); } catch { /* 缺失 */ }
   if (!st) return { ok: false, path: abs, reason: 'missing', mod: null };
@@ -214,7 +219,7 @@ function normalizeProbes(raw) {
 
 /** 返回 {ready:boolean, reason?, probes?:{name:{ok,reason,version}}, path} —— 绝不抛 */
 export async function probeExecutors(cfg, { force = false } = {}) {
-  const cacheKey = path.join(cfg.home, 'src', 'executors', 'index.mjs');
+  const cacheKey = path.join(cfg.codeRoot || cfg.home, 'src', 'executors', 'index.mjs');
   if (!force && _probeCache.value && Date.now() - _probeCache.at < PROBE_TTL_MS && _probeCache.value.path === cacheKey) {
     return _probeCache.value;
   }
@@ -281,12 +286,18 @@ async function runScan(cfg, { only, timeoutMs, maxItems, logs }) {
   if (typeof scanAll !== 'function') {
     return { ok: false, reason: 'sensor registry not ready', detail: 'src/sensors/index.mjs 未导出 scanAll()', created: 0, seen: 0, scanned: 0 };
   }
+  const notes = {};
   const scanCtx = {
     cfg,
-    now: nowIso(),
+    now: new Date(),
     only: only ?? null,
     cursor: { get: cursorGet, set: cursorSet },
-    log: (m) => logs.push(String(m)),
+    notes,              // 传感器把「这次为什么 0 条 / 降级在哪」写这里，随响应返回
+    opts: {},
+    log: (level, msg, data) => {
+      const tail = data && typeof data === 'object' ? ' ' + JSON.stringify(data) : '';
+      logs.push(`${level ?? 'info'} ${msg ?? ''}${tail}`.trim());
+    },
     emit,
   };
   const raws = await withTimeout(
@@ -347,6 +358,7 @@ async function runScan(cfg, { only, timeoutMs, maxItems, logs }) {
     created, seen, failed,
     truncated: raws.length > maxItems,
     bySource,
+    notes,
     itemIds: accepted.slice(0, 50),
   };
 }
@@ -373,10 +385,10 @@ function health(ctx) {
   }
   try { out.budget = todayCost(); }
   catch (e) { out.budget = { error: e.message }; }
-  const regPath = path.join(cfg.home, 'src', 'executors', 'index.mjs');
+  const regPath = path.join(cfg.codeRoot || cfg.home, 'src', 'executors', 'index.mjs');
   out.executors = { ready: fs.existsSync(regPath), path: regPath };
   if (!out.executors.ready) out.executors.reason = 'executor registry not ready';
-  out.sensors = { ready: fs.existsSync(path.join(cfg.home, 'src', 'sensors', 'index.mjs')) };
+  out.sensors = { ready: fs.existsSync(path.join(cfg.codeRoot || cfg.home, 'src', 'sensors', 'index.mjs')) };
   if (!out.sensors.ready) out.sensors.reason = 'sensor registry not ready';
   out.server = {
     host: cfg.server?.host || '127.0.0.1',

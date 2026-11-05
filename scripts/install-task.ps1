@@ -166,6 +166,10 @@ if ($Uninstall) {
     foreach ($f in @($stubPath, $vbsPath)) {
       if (Test-Path $f) { Remove-Item -LiteralPath $f -Force; Ok "已删除启动器 $f" }
     }
+    # 目录空了也一并删掉，别留空壳
+    if ((Test-Path $hiddenDir) -and -not (Get-ChildItem -LiteralPath $hiddenDir -Force)) {
+      Remove-Item -LiteralPath $hiddenDir -Force -ErrorAction SilentlyContinue
+    }
   } else { Info '· 按 -KeepLauncher 保留启动器' }
 
   exit $script:ExitCode

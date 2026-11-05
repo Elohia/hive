@@ -14,24 +14,31 @@ import {
 } from './taskcenter.mjs';
 import { buildContextText, systemPreamble } from '../context/profile.mjs';
 
-/** 选执行器：默认 dsh（本机已实测可用），代码类优先 pi */
+/** 选执行器：默认 dsh（本机已实测可用），代码类优先 pi；shell/proc 不接 NL 任务 */
 function pickExecutor(t, execs) {
   const has = (n) => execs.includes(n);
   if (t.primaryAction === 'code_change') return has('pi') ? 'pi' : has('dsh') ? 'dsh' : 'llm';
-  if (t.level <= 2) return has('dsh') ? 'dsh' : has('pi') ? 'pi' : has('shell') ? 'shell' : 'llm';
-  return has('dsh') ? 'dsh' : has('pi') ? 'pi' : 'llm';
+  if (has('dsh')) return 'dsh';
+  if (has('pi')) return 'pi';
+  return 'llm';
 }
 
 async function loadExecutors() {
   try { return await import('../executors/index.mjs'); } catch { return null; }
 }
 
+/** 只有这些执行器能接「自然语言目标」；shell/proc 只能接显式命令，绝不派 NL 任务 */
+const TASK_EXECUTORS = ['llm', 'dsh', 'pi', 'codex', 'claude'];
+
 async function availableExecutors() {
   const ex = await loadExecutors();
   if (!ex?.probe) return ['llm'];
   try {
     const p = await ex.probe();
-    return Object.entries(p).filter(([, v]) => v?.ok).map(([k]) => k);
+    const ok = Object.entries(p)
+      .filter(([k, v]) => v?.ok && TASK_EXECUTORS.includes(k))
+      .map(([k]) => k);
+    return ok.length ? ok : ['llm'];
   } catch { return ['llm']; }
 }
 
@@ -177,7 +184,10 @@ export async function processItem(itemOrId, { force = false, skipApproval = fals
 
   // 4) 需要真实工具 / L3+ → 派发给进程执行器
   const executor = pickExecutor(t, execs);
-  const p = await plan({ item, level: t.level, availableExecutors: execs });
+  const p = await plan({
+    item, level: t.level, availableExecutors: execs, defaultExecutor: executor,
+    maxSteps: t.level <= 2 ? 2 : 4,
+  });
   const parent = createTask({
     item_id: item.id, title: item.title, goal: item.body || item.title,
     executor: p.steps[0]?.executor || executor, autonomy_level: t.level,

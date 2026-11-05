@@ -80,6 +80,10 @@ const LABELS = {
   level: { 1: '整理', 2: '建议', 3: '中间件', 4: '确认后落地', 5: '端到端' },
   levelHint: { 1: '只读+整理，不需审批', 2: '只读+建议，不需审批', 3: '白名单目录内产出中间件', 4: '关键环节人工确认', 5: '全流程自主，仅不可逆动作需审批' },
   risk: { low: '低', medium: '中', high: '高', critical: '极高' },
+  approvalKind: {
+    decision: '决策', send_message: '发消息', publish: '发布', delete: '删除',
+    spend: '花钱', deploy: '部署', external: '对外', review: '复核',
+  },
   itemStatuses: ['inbox', 'planned', 'running', 'blocked', 'awaiting_human', 'done', 'failed', 'dropped', 'archived'],
 };
 
@@ -428,7 +432,7 @@ function itemCard(it) {
     <div class="card-actions">
       ${actions}
       <span class="spacer"></span>
-      ${chip('muted', LABELS.bucket[it.bucket] || it.bucket || '—')}
+      ${chip('muted', truncate(it.id, 22), it.id)}
     </div>
     <div class="detail" ${open ? '' : 'hidden'}>${open ? itemDetailHtml(state.details.get(key)) : ''}</div>
   </article>`;
@@ -552,7 +556,7 @@ function approvalCard(a) {
       <div class="chips">
         <span class="chip risk-${esc(risk)}">风险 ${esc(LABELS.risk[risk] || risk)}</span>
         ${statusChip(a.status)}
-        ${a.kind ? chip('kind', a.kind) : ''}
+        ${a.kind ? chip('kind', LABELS.approvalKind[a.kind] || a.kind, '审批类型 ' + a.kind) : ''}
         ${a.item_title ? chip('muted', '事项：' + truncate(a.item_title, 36)) : ''}
         ${chip('muted', fmt.ago(a.created_at))}
         ${expireChip(a.expires_at, a.status)}

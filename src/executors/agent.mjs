@@ -223,7 +223,7 @@ export function createCliExecutor(o) {
       artifacts: [],
       result: ok ? { text: parsed.text, ...(parsed.result || {}), ...(degraded ? { degraded } : {}), ...(parsed.meta ? { meta: parsed.meta } : {}) } : null,
       text: parsed.text,
-      error: ok ? null : (r.timedOut ? `超时 ${timeoutSec}s，已 kill 进程树` : r.killed ? '被取消/杀死' : `退出码 ${r.exitCode}`),
+      error: ok ? null : (parsed.meta?.fail_reason || (r.timedOut ? `超时 ${timeoutSec}s，已 kill 进程树` : r.killed ? '被取消/杀死' : `退出码 ${r.exitCode}`)),
       ms: r.ms,
       pid: r.pid,
       cmdline: r.cmdline,

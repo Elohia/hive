@@ -11,6 +11,9 @@ function parseClaude(stdout, _stderr, { cfg }) {
   const raw = String(stdout || '').trim();
   const rate = usdToCny(cfg);
 
+  // 认证类错误要在 error 里说人话（本机实测：settings.json 里的 ANTHROPIC_AUTH_TOKEN 失效 → 401）
+  const authErr = /(401|Authentication Fails|invalid api key|Please run \/login|credit balance)/i.exec(`${raw}\n${_stderr || ''}`);
+
   // 情况 1：--output-format json（单条 JSON 结果）
   if (raw.startsWith('{')) {
     try {
@@ -55,7 +58,10 @@ function parseClaude(stdout, _stderr, { cfg }) {
     tokens: { in: 0, out: 0 },
     costCny: 0,
     result: { text: raw },
-    meta: { usage_unknown: true },
+    meta: {
+      usage_unknown: true,
+      ...(authErr ? { auth_error: true, fail_reason: `claude 认证失败：${String(_stderr || raw).split(/\r?\n/).find((l) => /401|Authentication|invalid api key|credit balance/i.test(l))?.trim().slice(0, 240) || authErr[0]}` } : {}),
+    },
   };
 }
 

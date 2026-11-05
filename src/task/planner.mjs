@@ -8,7 +8,7 @@ const PLAN_SCHEMA = {
       key: 'string 唯一短标识',
       title: '一句话',
       goal: '这一步要达成什么（可验收）',
-      executor: 'llm|dsh|pi|codex|claude|shell',
+      executor: 'llm|dsh|pi|codex|claude',
       depends_on: ['key'],
       deliverable: '产出物形式（文件/结论/变更）',
     },
@@ -21,10 +21,11 @@ const PLAN_SCHEMA = {
  * 拆解一个任务为 DAG
  * @returns {{steps:Array, need_human:string[], risk:string, byLlm:boolean}}
  */
-export async function plan({ item, level, availableExecutors = [], maxSteps = 4 } = {}) {
+export async function plan({ item, level, availableExecutors = [], maxSteps = 4, defaultExecutor = null } = {}) {
   const title = item?.title || '任务';
   const body = (item?.body || '').slice(0, 2000);
   const execs = availableExecutors.length ? availableExecutors.join(',') : 'llm,dsh';
+  const fallback = defaultExecutor || (level >= 3 ? 'dsh' : 'llm');
 
   const r = await chat({
     tier: 'cheap',
@@ -46,17 +47,20 @@ export async function plan({ item, level, availableExecutors = [], maxSteps = 4 
   });
 
   if (!r.ok) {
-    return { steps: [{ key: 's1', title, goal: title, executor: level >= 3 ? 'dsh' : 'llm', depends_on: [], deliverable: '结论' }], need_human: [], risk: 'medium', byLlm: false, note: r.error };
+    return { steps: [{ key: 's1', title, goal: title, executor: fallback, depends_on: [], deliverable: '结论' }], need_human: [], risk: 'medium', byLlm: false, note: r.error };
   }
   const j = parseJson(r.text);
   if (!j || !Array.isArray(j.steps) || !j.steps.length) {
-    return { steps: [{ key: 's1', title, goal: title, executor: level >= 3 ? 'dsh' : 'llm', depends_on: [], deliverable: '结论' }], need_human: [], risk: 'medium', byLlm: false, note: 'LLM 输出不可解析' };
+    return { steps: [{ key: 's1', title, goal: title, executor: fallback, depends_on: [], deliverable: '结论' }], need_human: [], risk: 'medium', byLlm: false, note: 'LLM 输出不可解析' };
   }
   const steps = j.steps.slice(0, maxSteps).map((s, i) => ({
     key: String(s.key || `s${i + 1}`).slice(0, 24),
     title: String(s.title || `步骤${i + 1}`).slice(0, 120),
     goal: String(s.goal || s.title || '').slice(0, 400),
-    executor: ['llm', 'dsh', 'pi', 'codex', 'claude', 'shell'].includes(s.executor) ? s.executor : (level >= 3 ? 'dsh' : 'llm'),
+    // 只允许「能接自然语言目标」的执行器；shell/proc 会把它当命令跑，直接打回
+    executor: ['llm', 'dsh', 'pi', 'codex', 'claude'].includes(s.executor)
+      ? s.executor
+      : fallback,
     depends_on: Array.isArray(s.depends_on) ? s.depends_on.map(String).slice(0, 4) : [],
     deliverable: String(s.deliverable || '').slice(0, 120),
   }));
@@ -90,3 +94,4 @@ export function stepPrompt({ item, planSteps, step, prevResults = {} }) {
   lines.push('\n要求：只用你自己的工具完成这一步，最后用一段话给出「本步结论 + 产出在哪」。不要做后续步骤的事。');
   return lines.join('\n');
 }
+

@@ -12,7 +12,7 @@ async function loadExecutors() {
   try { return await import('../executors/index.mjs'); } catch { return null; }
 }
 
-function buildPrompt(task, item) {
+function buildPrompt(task, item, prevResults = {}) {
   const plan = safeParse(task.plan) || null;
   const ctx = buildContextText({ budgetChars: 2500 });
   const lvl = task.autonomy_level || 3;
@@ -21,6 +21,13 @@ function buildPrompt(task, item) {
     : lvl === 3
       ? '【写入约束】这是 L3 任务：可以在工作区产出文件，但不要对外发送/发布/删除，也不要提交到远端仓库。'
       : '';
+
+  const prev = Object.entries(prevResults || {});
+  const prevBlock = prev.length
+    ? '【前置步骤的实际产出（必须基于它继续，不要再重复取证）】\n' +
+      prev.map(([tid, r]) => `### ${r.title || tid}\n${String(r.text || '').slice(0, 4000)}`).join('\n\n')
+    : '';
+
   const parts = [
     systemPreamble(),
     guard,
@@ -28,6 +35,7 @@ function buildPrompt(task, item) {
     task.goal ? `目标/背景：\n${String(task.goal).slice(0, 3000)}` : '',
     plan?.goal ? `本步目标：${plan.goal}` : '',
     plan?.deliverable ? `期望产出：${plan.deliverable}` : '',
+    prevBlock,
     item?.body ? `原始信息：\n${String(item.body).slice(0, 2000)}` : '',
     ctx ? `我的上下文：\n${ctx}` : '',
     `工作目录：${process.cwd()}`,
@@ -57,7 +65,21 @@ export async function dispatchTask(taskId) {
   updateTask(task.id, { status: 'running', attempt, lease_until: leaseUntil, started_at: new Date().toISOString(), heartbeat_at: new Date().toISOString() });
 
   const run = openRun({ task_id: task.id, attempt, executor: task.executor || 'llm', command: task.executor });
-  const prompt = buildPrompt(task, item);
+
+  // 依赖链：把前置任务的实际产出带进 prompt（DAG 的上下文传递）
+  const prevResults = {};
+  try {
+    const deps = JSON.parse(task.depends_on || '[]');
+    for (const d of deps) {
+      const pt = getTask(d);
+      if (!pt) continue;
+      let txt = '';
+      try { txt = JSON.parse(pt.result || '{}')?.text || ''; } catch { txt = pt.result || ''; }
+      prevResults[d] = { title: pt.title, text: txt || pt.last_error || '(无产出)' };
+    }
+  } catch {}
+
+  const prompt = buildPrompt(task, item, prevResults);
   fs.writeFileSync(path.join(run.dir, 'prompt.txt'), prompt, 'utf8');
   fs.writeFileSync(path.join(run.dir, 'meta.json'), JSON.stringify({
     task: { id: task.id, title: task.title, executor: task.executor, level: task.autonomy_level },

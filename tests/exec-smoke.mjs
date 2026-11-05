@@ -85,19 +85,21 @@ check('proc.run.missing_cmd', !missing.ok && !!missing.spawnError, missing.spawn
 // ---------------------------------------------------------------- 4 超时 + 进程树 kill
 console.log('\n== 4. 超时 kill 整棵进程树（Windows taskkill /T /F）==');
 const pidFile = path.join(os.tmpdir(), `hive-tree-${Date.now()}.pid`);
+// 外层 pwsh 再起一个 pwsh 孙子进程，验证 taskkill /T 能把树连根拔掉
 const grandchild = [
-  '$p = Start-Process -FilePath pwsh -WindowStyle Hidden -PassThru',
-  "  -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 120'",
+  `$p = Start-Process -FilePath pwsh -WindowStyle Hidden -PassThru -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 120'`,
   `Set-Content -Path '${pidFile.replace(/'/g, "''")}' -Value $p.Id -Encoding ascii`,
   'Start-Sleep -Seconds 120',
-].join(' ');
+].join('\n');
 const tk = await runProcess({ command: 'pwsh', args: ['-NoProfile', '-Command', grandchild], timeoutSec: 8 });
 check('proc.timeout.detected', tk.timedOut === true && tk.ok === false, `ms=${tk.ms} exit=${tk.exitCode}`);
-check('proc.timeout.kill_method', /taskkill/i.test(tk.treeKill?.method || ''), JSON.stringify(tk.treeKill?.method));
+check('proc.timeout.kill_method', /taskkill/i.test(tk.treeKill?.method || ''), JSON.stringify(tk.treeKill?.method || null));
 check('proc.timeout.fast', tk.ms < 60_000, `${tk.ms}ms`);
 
 let gpid = null;
-try { gpid = Number(fs.readFileSync(pidFile, 'utf8').trim()); } catch { /* 文件没写出来 */ }
+for (let i = 0; i < 20 && gpid == null; i++) {
+  try { gpid = Number(fs.readFileSync(pidFile, 'utf8').trim()) || null; } catch { await new Promise((r) => setTimeout(r, 150)); }
+}
 fs.rmSync(pidFile, { force: true });
 await new Promise((r) => setTimeout(r, 1500));
 let alive = false;
@@ -107,6 +109,9 @@ if (gpid) {
 } else {
   fail('proc.timeout.tree_killed', '没能拿到孙进程 pid，无法验证进程树');
 }
+let parentAlive = false;
+if (tk.pid) { try { process.kill(tk.pid, 0); parentAlive = true; } catch { parentAlive = false; } }
+check('proc.timeout.parent_killed', parentAlive === false, `pid=${tk.pid} ${parentAlive ? '仍存活' : '已死'}`);
 
 // ---------------------------------------------------------------- 5 shell 执行器
 console.log('\n== 5. shell 执行器（真实 pwsh）==');

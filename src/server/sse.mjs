@@ -90,9 +90,11 @@ export function openStream({ req, res, cfg, query }) {
   const client = { res, close: null };
   const onClose = () => client.close();
   client.close = () => {
-    if (!clients.has(client)) return;
+    if (!clients.has(client)) return;   // 幂等：重复 close 不会二次 end 句柄
     clients.delete(client);
-    try { res.end(); } catch { /* 已断开 */ }
+    try {
+      if (!res.writableEnded && !res.destroyed) res.end();
+    } catch { /* 已断开 */ }
     stopHeartbeat();
   };
 

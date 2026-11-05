@@ -1,6 +1,7 @@
 // src/context/profile.mjs — 个人上下文聚合（谁、在做什么、关注什么、还欠什么）
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { q } from '../core/db.mjs';
 import { loadConfig } from '../core/config.mjs';
 import { emit } from '../core/events.mjs';
@@ -23,7 +24,9 @@ export function getFacts() {
 }
 
 export function upsertFact({ category, key, value, evidence, confidence = 0.7 }) {
-  const id = 'cf_' + Buffer.from(`${category}:${key}`).toString('hex').slice(0, 20);
+  // id 必须从完整 (category,key) 派生 —— 之前只取 hex 前 20 位会把
+  // preference:communication 和 preference:decision_style 撞成同一个 id
+  const id = 'cf_' + crypto.createHash('sha256').update(`${category}\u0000${key}`).digest('hex').slice(0, 24);
   const ts = new Date().toISOString();
   q.run(
     `INSERT INTO context_facts(id,category,key,value,evidence,confidence,updated_at) VALUES(?,?,?,?,?,?,?)

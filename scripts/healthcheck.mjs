@@ -288,7 +288,8 @@ if (db) {
 // ---------------------------------------------------------------- 4) 执行器（并行探测）
 {
   const exMod = await tryImport('src/executors/index.mjs');
-  if (exMod.mod?.probe) {
+  // --fast 不做版本探测：执行器模块的 probe() 会真跑 --version（pi 就 7.5s），直接走便宜的 where 分支
+  if (exMod.mod?.probe && !OPT.fast) {
     try {
       const p = await exMod.mod.probe();
       const names = Object.keys(p);
@@ -411,6 +412,7 @@ if (db) {
   if (alive && up) add('daemon.lock', 'PASS', `pid=${lock.pid} 活着，端口 ${port} 在听`);
   else if (alive && !up) add('daemon.lock', 'WARN', `pid=${lock.pid} 活着但端口 ${port} 未监听（server 未就绪？）`);
   else if (!alive && lock) add('daemon.lock', 'WARN', `锁文件残留 pid=${lock.pid} 已死 → 重启 daemon 会覆盖它`);
+  else if (!alive && up) add('daemon.lock', 'WARN', `端口 ${port} 有服务但没有 data/hive.lock → 起的是 serve / http.mjs 单进程，不是常驻 daemon（无巡检/无派发）`);
   else add('daemon.lock', 'WARN', '守护进程未运行（单次命令仍可用：node scripts/hive.mjs ...）');
 }
 
@@ -432,17 +434,24 @@ if (db) {
 
 // ---------------------------------------------------------------- 10) 备份 / 产物
 {
-  const dir = cfg ? path.join(cfg.home, 'data', 'backups') : rel('data', 'backups');
+  // 默认落点 data/backups；也顺手看 data/ 根（很多人用 --out data\x.zip 手写路径）
+  const dirs = [cfg ? path.join(cfg.home, 'data', 'backups') : rel('data', 'backups'), cfg ? path.join(cfg.home, 'data') : rel('data')];
+  const found = [];
   try {
-    if (!exists(dir)) add('backup.age', 'WARN', '从未备份（data/backups 不存在）→ 跑 node scripts/backup.mjs');
-    else {
-      const files = fs.readdirSync(dir).filter((f) => /\.(zip|gz|tgz)$/i.test(f))
-        .map((f) => ({ f, m: fs.statSync(path.join(dir, f)).mtimeMs })).sort((a, b) => b.m - a.m);
-      if (!files.length) add('backup.age', 'WARN', 'data/backups 里没有备份文件');
-      else {
-        const ageH = (Date.now() - files[0].m) / 3600e3;
-        add('backup.age', ageH > 24 * 7 ? 'WARN' : 'PASS', `最新 ${files[0].f}（${ageH.toFixed(1)} 小时前，共 ${files.length} 份）`);
+    for (const dir of dirs) {
+      if (!exists(dir)) continue;
+      for (const f of fs.readdirSync(dir)) {
+        if (!/^(hive-backup-|backup-|restore-).*\.(zip|db\.gz|tgz|tar\.gz)$/i.test(f)) continue;
+        const abs = path.join(dir, f);
+        try { const st = fs.statSync(abs); if (st.isFile()) found.push({ abs, f, m: st.mtimeMs }); } catch {}
       }
+    }
+    found.sort((a, b) => b.m - a.m);
+    if (!found.length) add('backup.age', 'WARN', '没找到任何备份（data/backups 与 data/ 下均无 *.zip）→ 跑 node scripts/backup.mjs');
+    else {
+      const ageH = (Date.now() - found[0].m) / 3600e3;
+      add('backup.age', ageH > 24 * 7 ? 'WARN' : 'PASS',
+        `最新 ${path.relative(ROOT, found[0].abs)}（${ageH.toFixed(1)} 小时前，共 ${found.length} 份）`);
     }
   } catch (e) { add('backup.age', 'WARN', String(e.message).slice(0, 120)); }
 
