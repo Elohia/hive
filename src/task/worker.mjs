@@ -149,10 +149,25 @@ export async function dispatchTask(taskId) {
     error: out.error ?? null,
   });
 
-  // 产物登记（执行器报的 + 输出目录里新出现的文件）
+  // 产物登记（执行器报的 + 本步新出现的文件）
   for (const a of res.artifacts || []) {
     try { addArtifact({ task_id: task.id, item_id: task.item_id, kind: a.kind || 'file', title: a.title || a.path, filePath: a.path }); } catch {}
   }
+  // 执行器往往是「自己写文件」而不上报，这里按 run 开始时间扫一遍产物目录/工作区
+  try {
+    const startedMs = Date.parse(run.started_at || new Date().toISOString()) - 2000;
+    for (const dir of [cfg.resolved.artifacts, cfg.resolved.workspace]) {
+      if (!fs.existsSync(dir)) continue;
+      for (const f of fs.readdirSync(dir)) {
+        const p = path.join(dir, f);
+        try {
+          const st = fs.statSync(p);
+          if (!st.isFile() || st.mtimeMs < startedMs) continue;
+          addArtifact({ task_id: task.id, item_id: task.item_id, kind: 'file', title: f, filePath: p });
+        } catch {}
+      }
+    }
+  } catch {}
 
   const tokensIn = res.tokens?.in ?? 0, tokensOut = res.tokens?.out ?? 0;
   const cost = res.costCny ?? 0;
