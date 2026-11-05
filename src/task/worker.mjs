@@ -176,9 +176,13 @@ export async function dispatchTask(taskId) {
   } else {
     const attemptNow = attempt;
     const canRetry = attemptNow < (task.max_attempts || cfg.settings.maxAttempts);
+    // 指数退避：重排时用 lease_until 兼作「最早可跑时间」，避免失败任务立刻再撞墙
+    const backoff = cfg.settings.retryBackoffSec || [60, 300, 900];
+    const delaySec = canRetry ? (backoff[Math.min(attemptNow - 1, backoff.length - 1)] || 60) : 0;
+    const notBefore = canRetry ? new Date(Date.now() + delaySec * 1000).toISOString() : null;
     updateTask(task.id, {
       status: canRetry ? 'queued' : 'failed',
-      lease_until: null,
+      lease_until: notBefore,
       last_error: String(out.error || 'unknown').slice(0, 1000),
       tokens_in: (task.tokens_in || 0) + tokensIn, tokens_out: (task.tokens_out || 0) + tokensOut,
       cost_cny: (task.cost_cny || 0) + cost,
@@ -186,8 +190,8 @@ export async function dispatchTask(taskId) {
     emit({
       actor: 'worker', type: `task.${canRetry ? 'retry' : 'failed'}`, task_id: task.id, run_id: run.id,
       level: canRetry ? 'warn' : 'error',
-      message: `${task.title} ${out.status}${canRetry ? ` (第 ${attemptNow} 次失败，将重试)` : ' (最终失败)'}`,
-      data: { error: String(out.error || '').slice(0, 400) },
+      message: `${task.title} ${out.status}${canRetry ? ` (第 ${attemptNow} 次失败，${delaySec}s 后重试)` : ' (最终失败)'}`,
+      data: { error: String(out.error || '').slice(0, 400), notBefore },
     });
   }
 

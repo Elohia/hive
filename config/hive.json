@@ -101,7 +101,7 @@
     "maxNotifyPerDay": 12,
     "approvalTtlHours": 72,
     "itemRetentionDays": 90,
-    "lanes": { "L1": 0, "L2": 0, "L3": 1, "L4": 1, "L5": 1 }
+    "lanes": { "L1": 3, "L2": 2, "L3": 2, "L4": 1, "L5": 1 }
   },
   "notify": {
     "toast": { "enabled": true },

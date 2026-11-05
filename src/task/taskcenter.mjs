@@ -7,6 +7,7 @@ import { q, tx, kvGet, kvSet, dbStats } from '../core/db.mjs';
 import { emit } from '../core/events.mjs';
 import { itemId as newItemId, taskId as newTaskId, runId as newRunId, approvalId as newApprovalId, shortHash } from '../core/ids.mjs';
 import { loadConfig } from '../core/config.mjs';
+import { assertWritable as guardAssertWritable } from '../core/guard.mjs';
 
 const now = () => new Date().toISOString();
 
@@ -199,13 +200,31 @@ export function updateTask(id, patch) {
   return m;
 }
 
-/** 原子领任务（依赖已满足 + 并发未超限） */
+/** 原子领任务：依赖已满足 + 并发未超限 + 车道未满 + 未到退避时间 */
 export function claimNextTask(maxConcurrent) {
   return tx(() => {
+    const cfg = loadConfig();
+    const nowIso = now();
     const running = q.get("SELECT COUNT(*) AS n FROM tasks WHERE status='running'")?.n ?? 0;
     if (running >= maxConcurrent) return null;
-    const cands = q.all("SELECT * FROM tasks WHERE status='queued' ORDER BY priority DESC, created_at ASC LIMIT 50");
+
+    // 车道限流：按自主等级限制并发
+    const lanes = cfg.settings.lanes || {};
+    const laneRunning = {};
+    for (const r of q.all("SELECT autonomy_level, COUNT(*) n FROM tasks WHERE status='running' GROUP BY autonomy_level")) {
+      laneRunning['L' + r.autonomy_level] = r.n;
+    }
+
+    // 依赖满足的候选
+    const cands = q.all("SELECT * FROM tasks WHERE status='queued' ORDER BY priority DESC, created_at ASC LIMIT 100");
     for (const t of cands) {
+      // 退避：lease_until 在 queued 状态下兼作「最早可跑时间」
+      if (t.lease_until && t.lease_until > nowIso) continue;
+      // 车道
+      const laneCap = lanes['L' + (t.autonomy_level ?? 3)];
+      if (typeof laneCap === 'number' && laneCap >= 0) {
+        if ((laneRunning['L' + (t.autonomy_level ?? 3)] || 0) >= laneCap) continue;
+      }
       let deps = [];
       try { deps = JSON.parse(t.depends_on || '[]'); } catch {}
       if (deps.length) {
@@ -215,8 +234,8 @@ export function claimNextTask(maxConcurrent) {
         });
         if (!okAll) continue;
       }
-      q.run("UPDATE tasks SET status='running', started_at=?, updated_at=?, heartbeat_at=? WHERE id=? AND status='queued'",
-        now(), now(), now(), t.id);
+      q.run("UPDATE tasks SET status='running', started_at=?, updated_at=?, heartbeat_at=?, lease_until=NULL WHERE id=? AND status='queued'",
+        nowIso, nowIso, nowIso, t.id);
       return getTask(t.id);
     }
     return null;
@@ -261,6 +280,9 @@ export function finishRun(id, patch) {
 // ---------- Artifact ----------
 export function addArtifact({ task_id, item_id, kind = 'file', title, filePath }) {
   if (!filePath || !fs.existsSync(filePath)) return null;
+  // 红线：产物必须落在白名单目录内
+  try { (guardAssertWritable)(filePath); }
+  catch (e) { emit({ actor: 'guard', type: 'artifact.blocked', level: 'error', task_id, item_id, message: e.message }); return null; }
   const st = fs.statSync(filePath);
   const buf = fs.readFileSync(filePath);
   const id = 'art_' + shortHash(filePath + st.mtimeMs, 16);

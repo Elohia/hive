@@ -13,6 +13,7 @@ import {
   getItem, updateItem, listItems, createTask, createApproval, addArtifact, todayCost,
 } from './taskcenter.mjs';
 import { buildContextText, systemPreamble } from '../context/profile.mjs';
+import { checkGoalAgainstRedlines } from '../core/guard.mjs';
 
 /** 选执行器：默认 dsh（本机已实测可用），代码类优先 pi；shell/proc 不接 NL 任务 */
 function pickExecutor(t, execs) {
@@ -160,6 +161,25 @@ export async function processItem(itemOrId, { force = false, skipApproval = fals
   }
 
   emit({ actor: 'router', type: 'route.start', item_id: item.id, message: `L${t.level} action=${t.primaryAction}` });
+
+  // 红线拦截：目标里点到 never_touch 区域 → 不派发，直接请示人
+  const red = checkGoalAgainstRedlines(`${item.title}\n${item.body || ''}`);
+  if (!red.ok) {
+    emit({ actor: 'guard', type: 'route.blocked', item_id: item.id, level: 'error', message: `命中禁改区：${red.hits.join(', ')}` });
+    const ap = createApproval({
+      item_id: item.id, kind: 'decision', risk: 'high',
+      title: `目标触及红线区域，需你确认：${item.title}`,
+      summary: `这条任务的目标路径命中 policies.never_touch：\n- ${red.hits.join('\n- ')}\n系统已拒绝自动执行。`,
+      context: { blockedPaths: red.hits, level: t.level, reason: t.reason },
+      options: [
+        { id: 'reject', label: '不做，归档', detail: '遵守红线，关闭这件事' },
+        { id: 'narrow', label: '缩小范围后重试', detail: '在备注里写清允许触及哪些路径' },
+        { id: 'approve', label: '我授权这次越过红线', detail: '仅本次，责任在我' },
+      ],
+      recommendation: '建议选 narrow：把范围改到白名单目录内再让 AI 做。',
+    });
+    return { route: 'escalate', ok: true, approval: ap, triage: t, blocked: red.hits };
+  }
 
   // 2) 需要审批：对外/不可逆动作（任意等级），或 L4「关键环节人工确认」
   //    L5 = 端到端自主，只有敏感动作才请示；L1-L3 默认不问人。
