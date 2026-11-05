@@ -41,6 +41,16 @@ function posArgs() {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const nowIso = () => new Date().toISOString();
 
+/** 带超时的 Promise 包装：超时抛错而不是无限等待（主循环的卡死保护） */
+function withTimeout(promise, ms, label = 'op') {
+  let timer;
+  const guard = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} 超时 ${ms}ms`)), ms);
+    if (timer.unref) timer.unref();
+  });
+  return Promise.race([promise, guard]).finally(() => clearTimeout(timer));
+}
+
 function out(x) { console.log(typeof x === 'string' ? x : JSON.stringify(x, null, 2)); }
 function table(rows, cols) {
   if (!rows?.length) { out('(空)'); return; }
@@ -136,7 +146,11 @@ async function cmdRun() {
     kind: 'todo', dedupe_key: 'manual|' + text.slice(0, 80) + '|' + Math.floor(Date.now() / 60000),
   });
   out(`→ 已建事项 ${item.id}`);
-  const r = await processItem(item.id, { force: true, skipApproval: !!flag('no-approval') });
+  const r = await processItem(item.id, {
+    force: true,
+    skipApproval: !!flag('no-approval'),
+    forceDispatch: !!flag('dispatch'),
+  });
   out(`路由结果: ${r.route} ${r.ok ? '✓' : '✗'}`);
   if (r.triage) out(`判定: L${r.triage.level} (conf ${r.triage.confidence}) — ${r.triage.reason}`);
   if (r.text) out('\n' + r.text);
@@ -414,7 +428,10 @@ async function cmdDaemon() {
     if (!fn) { markPulseRun(p, 'skip'); return; }
     const t0 = Date.now();
     try {
-      const r = await fn(p);
+      // 卡死保护：任何脉冲最多跑 pulseTimeoutSec（默认 240s），超时就放弃并记错，
+      // 绝不允许一个挂住的 handler 把整个主循环拖停。
+      const limitMs = (cfg.settings.pulseTimeoutSec || 240) * 1000;
+      const r = await withTimeout(fn(p), limitMs, p.name);
       markPulseRun(p, 'ok');
       logger.info(`pulse ${p.name} ok ${Date.now() - t0}ms ${r ?? ''}`);
     } catch (e) {
@@ -425,7 +442,7 @@ async function cmdDaemon() {
   }
 
   // 主循环
-  let lastWatchdog = 0, lastNotify = 0, lastPrune = 0, draining = false;
+  let lastWatchdog = 0, lastNotify = 0, lastPrune = 0, lastBeat = 0, draining = false;
   const tickMs = Math.max(1000, (cfg.settings.tickSec || 20) * 1000);
 
   while (!stopping) {
@@ -438,10 +455,21 @@ async function cmdDaemon() {
         await runPulse(p);
       }
 
-      // 2) 看门狗（每 tickSec）
+      // 2) 看门狗（每 tickSec）—— 同样加卡死保护
       if (now - lastWatchdog >= tickMs) {
         lastWatchdog = now;
-        await watchdog.tick();
+        try { await withTimeout(watchdog.tick(), 60000, 'watchdog'); }
+        catch (e) { emit({ actor: 'watchdog', type: 'watchdog.error', level: 'error', message: String(e.message).slice(0, 300) }); }
+      }
+
+      // 2.5) 心跳：每 5 分钟一条，用来判断「主循环还活着」
+      if (now - lastBeat >= 5 * 60e3) {
+        lastBeat = now;
+        emit({
+          actor: 'system', type: 'daemon.heartbeat', level: 'debug',
+          message: 'alive',
+          data: { memMb: Math.round(process.memoryUsage().rss / 1048576), draining, uptimeSec: Math.round(process.uptime()) },
+        });
       }
 
       // 3) 派发队列 —— 不阻塞主循环：否则一个 15 分钟的任务会让
@@ -551,6 +579,7 @@ function usage() {
   serve  [--port 8787]      只起看板
   scan   [--source mail]    立即跑一轮感知
   run    "<一句话任务>"      手工投递并立刻路由
+                            [--drain] 跑空队列 / [--dispatch] 强制派给进程执行器 / [--no-approval] 跳过审批
   inbox  [--limit 30]       看待办
   outbox                    看待你拍板的事
   approve <id> --option approve|revise|reject [--note "..."]

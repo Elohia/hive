@@ -106,11 +106,12 @@ export async function dispatchTask(taskId) {
           updateTask(task.id, { heartbeat_at: new Date().toISOString() });
         },
         onLog: (line) => {
-          // 只把关键行进事件流，避免刷屏
-          if (/error|fail|exception|denied/i.test(line)) {
-            emit({ actor: 'worker', type: 'worker.stderr', task_id: task.id, run_id: run.id, level: 'warn', message: String(line).slice(0, 300) });
+          // 执行器的 onLog 有时给对象（结构化事件），有时给字符串
+          const text = typeof line === 'string' ? line : (() => { try { return JSON.stringify(line); } catch { return String(line); } })();
+          if (/error|fail|exception|denied/i.test(text)) {
+            emit({ actor: 'worker', type: 'worker.stderr', task_id: task.id, run_id: run.id, level: 'warn', message: text.slice(0, 300) });
           }
-          try { fs.appendFileSync(path.join(run.dir, 'output.log'), String(line).slice(0, 4000) + '\n'); } catch {}
+          try { fs.appendFileSync(path.join(run.dir, 'output.log'), text.slice(0, 4000) + '\n'); } catch {}
         },
       });
       out = { ok: !!res.ok, status: res.ok ? 'succeeded' : (res.timeout ? 'timeout' : 'failed'), error: res.error, res };

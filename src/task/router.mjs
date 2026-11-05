@@ -126,7 +126,7 @@ export async function escalate(item, t, extra = {}) {
  * 处理一个 item 的主入口
  * @returns {{route:'inline'|'dispatch'|'escalate'|'skip', ok:boolean, detail?:any}}
  */
-export async function processItem(itemOrId, { force = false, skipApproval = false } = {}) {
+export async function processItem(itemOrId, { force = false, skipApproval = false, forceDispatch = false } = {}) {
   const cfg = loadConfig();
   const item = typeof itemOrId === 'string' ? getItem(itemOrId) : itemOrId;
   if (!item) return { route: 'skip', ok: false, error: 'item 不存在' };
@@ -212,7 +212,7 @@ export async function processItem(itemOrId, { force = false, skipApproval = fals
   // 3) L1/L2 → 内联（便宜）。即使 needsTools 也不自动派进程执行器：
   //    低等级 = 「理解与建议」，不该为每条情报起一个 60s 的 Agent。
   //    需要真工具时，内联会把「缺少什么工具、该怎么补」写清楚，由人决定是否升级。
-  if (t.level <= 2) {
+  if (t.level <= 2 && !forceDispatch) {
     const r = await handleInline(item, { ...t, needsTools: t.needsTools });
     return { route: 'inline', ...r, triage: t };
   }

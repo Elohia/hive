@@ -36,30 +36,71 @@
           "cheap": "deepseek-chat",
           "strong": "deepseek-reasoner"
         },
-        "pricing": { "cheap": { "in": 2.0, "out": 8.0 }, "strong": { "in": 4.0, "out": 16.0 } }
+        "pricing": {
+          "cheap": {
+            "in": 2,
+            "out": 8
+          },
+          "strong": {
+            "in": 4,
+            "out": 16
+          }
+        }
       },
       "glm": {
         "baseURL": "https://opencode.ai/zen/go/v1",
         "keyRef": "glm",
-        "headers": { "x-opencode-session": "dsh-opencode-go-session" },
-        "models": { "cheap": "glm-5.3-flash", "strong": "glm-5.3-flash" },
-        "pricing": { "cheap": { "in": 0.5, "out": 2.0 }, "strong": { "in": 0.5, "out": 2.0 } }
+        "headers": {
+          "x-opencode-session": "dsh-opencode-go-session"
+        },
+        "models": {
+          "cheap": "glm-5.3-flash",
+          "strong": "glm-5.3-flash"
+        },
+        "pricing": {
+          "cheap": {
+            "in": 0.5,
+            "out": 2
+          },
+          "strong": {
+            "in": 0.5,
+            "out": 2
+          }
+        }
       },
       "xiaomi": {
         "baseURL": "https://api.xiaomimimo.com/v1",
         "keyRef": "xiaomi",
-        "models": { "cheap": "mimo-v2.6-flash", "strong": "mimo-v2.6-pro" },
-        "pricing": { "cheap": { "in": 1.0, "out": 4.0 }, "strong": { "in": 4.0, "out": 16.0 } }
+        "models": {
+          "cheap": "mimo-v2.6-flash",
+          "strong": "mimo-v2.6-pro"
+        },
+        "pricing": {
+          "cheap": {
+            "in": 1,
+            "out": 4
+          },
+          "strong": {
+            "in": 4,
+            "out": 16
+          }
+        }
       }
     }
   },
   "executors": {
-    "llm": { "enabled": true, "kind": "inline" },
+    "llm": {
+      "enabled": true,
+      "kind": "inline"
+    },
     "dsh": {
       "enabled": true,
       "kind": "process",
       "command": "dsh",
-      "args": ["--profile", "headless"],
+      "args": [
+        "--profile",
+        "headless"
+      ],
       "cwdMode": "task",
       "coldStartSec": 55,
       "note": "dsh --profile headless \"<job>\" prints final answer and exits"
@@ -68,24 +109,42 @@
       "enabled": true,
       "kind": "process",
       "command": "pi",
-      "args": ["-p", "--mode", "json"],
+      "args": [
+        "-p",
+        "--mode",
+        "json"
+      ],
       "cwdMode": "task"
     },
     "codex": {
       "enabled": true,
       "kind": "process",
       "command": "codex",
-      "args": ["exec", "--skip-git-repo-check"],
+      "args": [
+        "exec",
+        "--skip-git-repo-check"
+      ],
       "cwdMode": "task"
     },
     "claude": {
       "enabled": true,
       "kind": "process",
       "command": "claude",
-      "args": ["-p"],
+      "args": [
+        "-p"
+      ],
       "cwdMode": "task"
     },
-    "shell": { "enabled": true, "kind": "process", "command": "pwsh", "args": ["-NoProfile", "-Command"], "cwdMode": "task" }
+    "shell": {
+      "enabled": true,
+      "kind": "process",
+      "command": "pwsh",
+      "args": [
+        "-NoProfile",
+        "-Command"
+      ],
+      "cwdMode": "task"
+    }
   },
   "settings": {
     "tickSec": 20,
@@ -94,25 +153,40 @@
     "defaultTimeoutSec": 900,
     "defaultBudgetTokens": 120000,
     "maxAttempts": 3,
-    "retryBackoffSec": [60, 300, 900],
+    "retryBackoffSec": [
+      60,
+      300,
+      900
+    ],
     "dailyBudgetCny": 8,
     "budgetWarnRatio": 0.8,
-    "quietThreshold": 6.0,
+    "quietThreshold": 6,
     "dupTitleWindowHours": 24,
     "maxNotifyPerDay": 12,
     "approvalTtlHours": 72,
     "itemRetentionDays": 90,
-    "lanes": { "L1": 3, "L2": 2, "L3": 2, "L4": 1, "L5": 1 }
+    "lanes": {
+      "L1": 3,
+      "L2": 2,
+      "L3": 2,
+      "L4": 1,
+      "L5": 1
+    },
+    "pulseTimeoutSec": 240
   },
   "notify": {
-    "toast": { "enabled": true },
+    "toast": {
+      "enabled": true
+    },
     "mail": {
       "enabled": false,
       "command": "agently-cli",
       "to": "",
       "note": "需人工批准后才发；启用前先填 to"
     },
-    "dashboard": { "enabled": true }
+    "dashboard": {
+      "enabled": true
+    }
   },
   "sources": {
     "mail": {
@@ -140,23 +214,47 @@
     "docs": {
       "enabled": true,
       "intervalSec": 3600,
-      "roots": ["D:\\elohia\\reports", "D:\\pi-agent\\reports", "D:\\hive\\docs", "D:\\elohia\\docs"],
+      "roots": [
+        "D:\\elohia\\reports",
+        "D:\\pi-agent\\reports",
+        "D:\\hive\\docs",
+        "D:\\elohia\\docs"
+      ],
       "lookbackHours": 72,
-      "exts": [".md", ".txt", ".html", ".json"]
+      "exts": [
+        ".md",
+        ".txt",
+        ".html",
+        ".json"
+      ]
     },
     "calendar": {
       "enabled": true,
       "intervalSec": 3600,
-      "icsPaths": ["data\\calendar\\*.ics"],
+      "icsPaths": [
+        "data\\calendar\\*.ics"
+      ],
       "lookaheadHours": 72
     },
-    "x": { "enabled": false, "intervalSec": 3600, "note": "依赖 DSH x_* 工具，daemon 侧暂以 CLI 方式接入" },
-    "wechat": { "enabled": false, "intervalSec": 1800, "note": "依赖 D:\\elohia 的 wcdb 桥；默认关闭（隐私）" },
+    "x": {
+      "enabled": false,
+      "intervalSec": 3600,
+      "note": "依赖 DSH x_* 工具，daemon 侧暂以 CLI 方式接入"
+    },
+    "wechat": {
+      "enabled": false,
+      "intervalSec": 1800,
+      "note": "依赖 D:\\elohia 的 wcdb 桥；默认关闭（隐私）"
+    },
     "pulses_local": {
       "enabled": true,
       "intervalSec": 1800,
       "note": "读取本机既有自动化产物（pi-agent automations / dsh-home duties）作为进展信号"
     },
-    "self": { "enabled": true, "intervalSec": 3600, "note": "自检：失败任务堆积/预算/数据库健康" }
+    "self": {
+      "enabled": true,
+      "intervalSec": 3600,
+      "note": "自检：失败任务堆积/预算/数据库健康"
+    }
   }
 }

@@ -156,16 +156,60 @@ data\       hive.db · runs\（每次执行原始产物）· artifacts\（交付
 
 ## 实测记录
 
-> 逐条都是真跑出来的，不是设计稿。
+> 逐条都是真跑出来的，不是设计稿。时间：2026-11-05。
 
-- `tests/smoke-core.mjs` **10/10 PASS**：配置、凭据（5 个 key）、DB schema、ID、事件、LLM 真调（deepseek-chat 1.4s）。
-- 首次真实扫描 `hive scan`：**33 条**真实事项（mail 12 / git 3 / docs 10 / pulses_local 8），耗时 16.6s。
-  - 发现真问题：`xhs-duty` 已 5.9 天未运行、`bili-duty` 5.8 天未运行、`盘中` 自动化 37 天未跑且含失败。
-  - 噪声治理：8 封退信自动识别为 `fyi` 并降权到 9.3→（噪声强制 1/1）。
-- `hive run` 内联路径：L1 判定（conf 0.79）→ LLM 出结论 → 产物落 `data/artifacts/`；模型**拒绝编造**能力清单并指出缺证据。
-- `hive run` 派发路径：识别「需要真工具」→ 不内联，规划成 3 步 DAG（list → read → summarize）并建任务链。
-- 看板 HTTP：`/api/health`、`/api/overview` 真实返回；dashboard 静态页可离线打开。
-- Windows Toast：实测弹出成功。
+**测试套件（全绿）**
+
+```
+smoke-core      10/10 PASS      1.6s
+sensors-smoke   29/29 PASS     19.0s
+exec-smoke      50 PASS / 0 FAIL / 3 SKIP   172s
+server-smoke    89/89 PASS     10.3s
+e2e             42/42 PASS     18s     ← 端到端闭环 + 回归断言
+```
+
+**真实数据（不是 fixture）**
+
+- 首次 `hive scan`：33 条真实事项（mail 12 / git 3 / docs 10 / pulses_local 8），16.6s。
+- 立刻发现真问题：`xhs-duty` 已 5.9 天未运行、`bili-duty` 5.8 天、`盘中` 自动化 37 天未跑且含失败、
+  三个仓库有未提交变更（evo 9 处 / MiroFish 2 处 / tickflow 1 处）。
+- 上下文归纳器（一次 ¥0.011）产出：
+  - 当前焦点：舆情回测口径收敛 / 节前风控（缩量破位+591亿解禁）/ hive 结构梳理
+  - 6 条未完成事项（每条带「卡在哪 + 下一步动作」）
+  - 2 个机会：**把三个值守合并到带失败告警与自动重试的调度层**（一次改造覆盖全部）、
+    把「热度无边、作者有边」固化为策略过滤条件
+  - 5 条风险（分发链路实际已断、盘中链路可信度存疑、回测样本右删失…）
+- 12 条脉冲全部 `ok`：巡检 → 判定 → 派发 → 看门狗 → 晨报/晚报（Windows Toast 真弹出）。
+- `dsh` 执行器真跑通：一次只读调查产出带文件证据的结构化报告（`data/runs/<id>/stdout.txt`）。
+- 看板 `http://127.0.0.1:8787` 实测渲染，SSE 实时刷新。
+
+**修掉的真 bug（都被测试锁住了）**
+
+| bug | 现象 | 修法 |
+|---|---|---|
+| `shell` 被选来跑自然语言 | 整段 prompt 被当 PowerShell 命令，ParserError | 执行器白名单，只有 llm/dsh/pi/codex/claude 能接 NL 任务 |
+| `onSpawn` 误用 `finishRun` | run 一 spawn 就被标 `ok` → 看门狗判孤儿 → **无限重跑** | 新增 `attachRunPid()`；E2E 加回归断言 |
+| 主循环 `await drainQueue` | 一个长任务让看门狗/脉冲/推送全部停摆 | 改 fire-and-forget + `draining` 闸 |
+| `recover()` 只认租约过期 | 「领了但没产生 run」的孤儿永不被回收 | dead 判定加入 orphan；tick 对孤儿 30s 回收 |
+| 脉冲突发全量派发 | 22 个任务排队，全是低价值情报 | fyi 守中 + L1/L2 不派进程执行器 |
+| 退信刷屏 | 8 封相同退信各成一条，还判成 L4 发布 | 类型归一 + 噪声强制降权 + `\bpost\b` 词边界 |
+| `upsertFact` id 碰撞 | `preference:communication` 与 `preference:decision_style` 同 id | 改 sha256 完整派生 |
+| 静态根跟 `HIVE_HOME` 走 | 换数据目录后看板 404 | 拆 `codeRoot`(代码) 与 `home`(数据) |
+
+---
+
+## 已知限制（诚实清单）
+
+1. **`codex` 不可用**：上游 `api.xiaomimimo.com` 余额不足 → 402。执行器如实报错，不静默。
+2. **`claude` 不可用**：`~/.claude/settings.json` 的 `ANTHROPIC_AUTH_TOKEN` 失效 → 401；CLI 自身重试约 197s，90s 超时下只看到「超时」。
+   → 不阻塞：L4/L5 默认走 `dsh`（已验证），`probe()` 只验二进制与版本，验不了余额/凭据。
+3. **微信 / X 传感器默认关闭**：需要在 `config/hive.json` 打开并补适配器。
+4. **日历只有 ICS**：本机没有本地日历源，静默 0 条。
+5. **L4/L5 的「自主验证」是「执行器自述 + 产物落盘 + 可回溯」**，没有独立第二套验收器。
+6. **关键词判定有误报**：「给出修复动作」会被 `修复` 抬到 L4；看板可手动「调级」纠正。
+7. **安装脚本要 PowerShell 7**：`install-task.ps1` 必须用 `pwsh`，Windows 自带 5.1 会 ParserError（实测）。
+8. **OS 级权限隔离有限**：本机 DSH 是 `danger-full-access`，隔离靠「红线守卫 + 执行器白名单 + 只读 prompt 约束 + 人工审批」，不是容器级沙箱。
+9. **成本是估算**：按配置单价表算，可能偏离账单；`dsh headless` 的 stdout 不含 usage，tokens 记 0 并标 `usage_unknown`（不编造）。
 
 ---
 
@@ -178,8 +222,19 @@ data\       hive.db · runs\（每次执行原始产物）· artifacts\（交付
 
 - 微信 / X 的传感器默认关闭（隐私与稳定性），需要时在 `config/hive.json` 打开。
 - 日历通道本机没有本地日历，目前只支持 ICS 文件，无配置时静默跳过。
-- L4/L5 的「自主验证」目前是「执行器自述 + 产物落盘 + 人工可回溯」，**没有独立的自动化验收器**（诚实标注）。
+- L4/L5 的「自主验证」目前是「执行器自述 + 产物落盘 + 人工可回溯」，**没有独立的自动化验收器**。
 - 成本估算基于配置里的单价表，可能与实际账单有偏差。
+- 完整限制清单见上文「已知限制」。
+
+## 开机自启
+
+```powershell
+pwsh -NoProfile -File scripts\install-task.ps1     # ⚠ 必须用 pwsh 7，5.1 会解析失败
+pwsh -NoProfile -File scripts\uninstall-task.ps1   # 卸载
+```
+
+计划任务：登录时启动 → `wscript run_hidden.vbs` → `hive-daemon.cmd`（隐藏窗口，不弹黑框）
+→ `node scripts/hive.mjs daemon`；失败每分钟重启，最多 999 次；无执行时限；多实例忽略新请求。
 
 ## 铁律
 
