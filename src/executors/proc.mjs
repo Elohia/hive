@@ -198,7 +198,10 @@ export async function killTree(child, { timeoutSec = 20 } = {}) {
     // taskkill 对已退出进程返回 128，不算异常
     const ok = r.exitCode === 0 || /not found|没有找到|找不到/i.test(r.stdout + r.stderr);
     if (!ok) { try { child.kill('SIGKILL'); } catch {} }
-    return { ok, method: 'taskkill /T /F', pid, exitCode: r.exitCode, output: (r.stdout + r.stderr).trim().slice(0, 400) };
+    // 成功时不带原始输出（中文控制台是 GBK，落库会是乱码），失败时保留供排障
+    return ok
+      ? { ok: true, method: 'taskkill /T /F', pid, exitCode: r.exitCode }
+      : { ok: false, method: 'taskkill /T /F', pid, exitCode: r.exitCode, output: (r.stdout + r.stderr).trim().slice(0, 400) };
   }
   let ok = false;
   try { process.kill(-pid, 'SIGKILL'); ok = true; } catch {}
@@ -312,13 +315,18 @@ export function runProcess(o = {}) {
 
   let resolve;
   const promise = new Promise((r) => { resolve = r; });
+  let pendingKill = null; // 超时杀进程树是异步的；close 可能先到，必须先等它落定再给结论
 
   const timeoutMs = Math.max(0, Number(timeoutSec) || 0) * 1000;
   if (timeoutMs > 0) {
-    killTimer = setTimeout(async () => {
+    killTimer = setTimeout(() => {
       timedOut = true;
       const pid = child.pid;
-      treeKill = await killTree(child);
+      // 先同步记下「用的什么方法」，再异步等 taskkill 的真实结果
+      treeKill = { ok: null, method: WIN ? 'taskkill /T /F' : 'kill(-pgid,SIGKILL)', pid, pending: true };
+      pendingKill = killTree(child)
+        .then((tk) => { treeKill = tk; return tk; })
+        .catch((e) => { treeKill = { ok: false, method: 'kill-error', pid, reason: String(e?.message || e) }; });
       // 给 5s 让 close 自然到达，否则强制收尾
       killTimer = setTimeout(() => {
         killed = true;
@@ -336,17 +344,16 @@ export function runProcess(o = {}) {
     outLines.flush();
     errLines.flush();
     if (killTimer) clearTimeout(killTimer);
-    const ms = Date.now() - startedAt;
-    const ok = !timedOut && !spawnError && !killed && exitCode === 0;
-    resolve({
-      ok,
+
+    const build = () => ({
+      ok: !timedOut && !spawnError && !killed && exitCode === 0,
       exitCode: exitCode ?? null,
       signal: signal ?? null,
       stdout,
       stderr,
       timedOut,
       killed,
-      ms,
+      ms: Date.now() - startedAt,
       pid: child?.pid ?? null,
       cmdline,
       spawnError,
@@ -354,6 +361,12 @@ export function runProcess(o = {}) {
       truncated: outTrunc || errTrunc,
       via: spec.via,
     });
+
+    if (!pendingKill) return resolve(build());
+    // close 可能比 taskkill 的结果先到：最多等 3s，避免拿到 treeKill=null 的残缺结论
+    const guard = setTimeout(() => resolve(build()), 3000);
+    if (typeof guard.unref === 'function') guard.unref();
+    pendingKill.finally(() => { clearTimeout(guard); resolve(build()); });
   }
 
   child.on('close', (code, signal) => finalize(code, signal));

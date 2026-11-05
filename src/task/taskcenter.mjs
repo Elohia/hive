@@ -57,6 +57,21 @@ export function upsertItem(raw) {
     return { item: { ...existing, last_seen_at: ts, updated_at: ts }, created: false };
   }
 
+  // 二级去重：同一来源 + 同一标题在窗口内只保留一条（传感器每轮会带不同的时间戳/ref）
+  const ttlH = cfg.settings.dupTitleWindowHours ?? 24;
+  if (ttlH > 0) {
+    const cutoff = new Date(Date.now() - ttlH * 3600e3).toISOString();
+    const twin = q.get(
+      'SELECT * FROM items WHERE source=? AND title=? AND created_at >= ? ORDER BY created_at DESC LIMIT 1',
+      source, String(raw.title || '').slice(0, 300), cutoff
+    );
+    if (twin) {
+      q.run('UPDATE items SET last_seen_at=?, updated_at=? WHERE id=?', ts, ts, twin.id);
+      emit({ actor: 'sensor', type: 'item.dedup_window', item_id: twin.id, message: `[${source}] 窗口内重复，并入既有条目：${twin.title}` });
+      return { item: { ...twin, last_seen_at: ts, updated_at: ts }, created: false, deduped: true };
+    }
+  }
+
   // 类型归一 + 噪声识别（退信/订阅类直接降为 fyi，避免淹没 Inbox）
   const ref = refineKind(raw.kind || raw.kind_hint || 'fyi', raw.title || '', raw.body || '');
   const kindDefaults = cfg.policies.kind_defaults[ref.kind] || { urgency: 3, impact: 3 };
@@ -256,6 +271,12 @@ export function openRun({ task_id, attempt, executor, command, cmdline }) {
   );
   emit({ actor: 'worker', type: 'run.started', task_id, run_id: id, message: `${executor} attempt#${attempt}` });
   return { id, dir };
+}
+
+/** 只记录子进程 pid（不要用它结束 run —— 那是 finishRun 的职责） */
+export function attachRunPid(runId, pid) {
+  if (!runId) return;
+  q.run('UPDATE runs SET pid=? WHERE id=?', pid ?? null, runId);
 }
 
 export function finishRun(id, patch) {

@@ -3,22 +3,23 @@ import { q } from '../core/db.mjs';
 import { loadConfig } from '../core/config.mjs';
 import { chat, parseJson } from '../core/llm.mjs';
 
-/** 动作意图关键词表：命中即认为请求包含该动作。顺序 = 优先级（越靠后越“重”） */
+/** 动作意图关键词表：命中即认为请求包含该动作。顺序 = 优先级（越靠后越“重”）
+ *  英文一律加 \b 词边界 —— 否则 `post` 会命中 "PostMaster"，`read` 会命中 "already"。 */
 const ACTION_RULES = [
-  { action: 'read',      re: /(查看|读取|看一下|有啥|有什么|列出|list|show|read|check)/i },
-  { action: 'summarize', re: /(总结|摘要|归纳|整理|提取|待办|梳理|summar|digest|extract|roundup)/i },
-  { action: 'classify',  re: /(分类|打标|归类|判定类型|classify|tag)/i },
-  { action: 'analyze',   re: /(分析|评估|判断|对比|诊断|复盘|为什么|原因|analy[sz]|assess|review|diagnos)/i },
-  { action: 'plan',      re: /(方案|计划|规划|路线|怎么办|如何|建议|propose|plan|proposal|recommend)/i },
-  { action: 'draft',     re: /(起草|草稿|写一篇|拟|撰写|文案|大纲|draft|outline|compose)/i },
-  { action: 'write_local', re: /(生成|写入|保存|导出|建个文件|make a file|write|export|generate)/i },
-  { action: 'research',  re: /(调研|研究|搜集|查资料|对比资料|research|survey|investigate)/i },
-  { action: 'code_change', re: /(改代码|修 bug|修复|实现功能|重构|提交代码|fix bug|implement|refactor|commit)/i },
-  { action: 'send_external', re: /(发送|回复邮件|发给|通知对方|联系|send|reply|email|message .*to)/i },
-  { action: 'publish',   re: /(发布|发推|发帖|上传|公开|publish|post|tweet|ship)/i },
-  { action: 'delete',    re: /(删除|清空|移除|delete|remove|purge|drop)/i },
-  { action: 'spend',     re: /(购买|订阅|充值|付费|下单|buy|purchase|subscribe|pay)/i },
-  { action: 'deploy',    re: /(部署|上线|发布到服务器|deploy|release to prod)/i },
+  { action: 'read',      re: /(查看|读取|看一下|有啥|有什么|列出|查一下|\blist\b|\bshow\b|\bread\b|\bcheck\b)/i },
+  { action: 'summarize', re: /(总结|摘要|归纳|整理|提取|待办|梳理|\bsummari[sz]e\b|\bdigest\b|\bextract\b|\broundup\b)/i },
+  { action: 'classify',  re: /(分类|打标|归类|判定类型|\bclassify\b|\btag\b)/i },
+  { action: 'analyze',   re: /(分析|评估|判断|对比|诊断|复盘|为什么|原因|\banaly[sz]e\b|\bassess\b|\breview\b|\bdiagnos)/i },
+  { action: 'plan',      re: /(方案|计划|规划|路线|怎么办|如何|建议|\bpropose\b|\bplan\b|\bproposal\b|\brecommend\b)/i },
+  { action: 'draft',     re: /(起草|草稿|写一篇|拟|撰写|文案|大纲|\bdraft\b|\boutline\b|\bcompose\b)/i },
+  { action: 'write_local', re: /(生成|写入|保存|导出|建个文件|\bmake a file\b|\bwrite\b|\bexport\b|\bgenerate\b)/i },
+  { action: 'research',  re: /(调研|研究|搜集|查资料|对比资料|\bresearch\b|\bsurvey\b|\binvestigate\b)/i },
+  { action: 'code_change', re: /(改代码|修 ?bug|修复|实现功能|重构|提交代码|\bfix bug\b|\bimplement\b|\brefactor\b|\bcommit\b)/i },
+  { action: 'send_external', re: /(发送|回复邮件|发给|通知对方|联系对方|\bsend\b|\breply\b|\bemail to\b|\bmail to\b)/i },
+  { action: 'publish',   re: /(发布|发推|发帖|上传|公开|\bpublish\b|\btweet\b|\brelease to prod\b)/i },
+  { action: 'delete',    re: /(删除|清空|移除|\bdelete\b|\bremove\b|\bpurge\b)/i },
+  { action: 'spend',     re: /(购买|订阅|充值|付费|下单|\bbuy\b|\bpurchase\b|\bsubscribe\b|\bpay\b)/i },
+  { action: 'deploy',    re: /(部署|上线|\bdeploy\b)/i },
 ];
 
 const DOMAIN_RULES = [

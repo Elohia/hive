@@ -5,7 +5,7 @@ import { loadConfig } from '../core/config.mjs';
 import { chat } from '../core/llm.mjs';
 import { emit } from '../core/events.mjs';
 import { logger } from '../core/log.mjs';
-import { getTask, updateTask, openRun, finishRun, addArtifact, getItem, updateItem } from './taskcenter.mjs';
+import { getTask, updateTask, openRun, finishRun, attachRunPid, addArtifact, getItem, updateItem } from './taskcenter.mjs';
 import { buildContextText, systemPreamble } from '../context/profile.mjs';
 
 async function loadExecutors() {
@@ -100,7 +100,9 @@ export async function dispatchTask(taskId) {
         timeoutSec, budgetTokens,
         runDir: run.dir,
         onSpawn: (pid) => {
-          finishRun(run.id, { pid });
+          // 只登记 pid；绝不能在这里 finishRun（否则 run 立刻被标 ok，
+          // 看门狗会认为「领了却没在跑」→ 按孤儿回收 → 无限重跑。实测踩过）
+          try { attachRunPid(run.id, pid); } catch {}
           updateTask(task.id, { heartbeat_at: new Date().toISOString() });
         },
         onLog: (line) => {

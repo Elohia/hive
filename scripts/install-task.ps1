@@ -87,7 +87,8 @@ if (-not (Test-Path $hiveCli)) {
   Fail "找不到 $hiveCli（-Root 指错？）" 2
   exit 2
 }
-$nodeExe = (Get-Command node -ErrorAction SilentlyContinue)?.Source
+$nodeCmd = Get-Command node -ErrorAction SilentlyContinue
+$nodeExe = if ($null -ne $nodeCmd) { $nodeCmd.Source } else { $null }
 if (-not $nodeExe) {
   Fail 'PATH 里没有 node.exe，先装 Node 24 并确保 where node 能找到' 2
   exit 2

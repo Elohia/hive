@@ -82,13 +82,20 @@ export function seedPulses() {
   return added;
 }
 
+function withConfig(row) {
+  if (!row) return row;
+  let c = row.config;
+  if (typeof c === 'string') { try { c = JSON.parse(c); } catch { c = null; } }
+  return { ...row, config: c || {} };
+}
+
 export function allPulses() {
-  return q.all('SELECT * FROM pulses ORDER BY id');
+  return q.all('SELECT * FROM pulses ORDER BY id').map(withConfig);
 }
 
 export function duePulses(now = new Date()) {
   const iso = now.toISOString();
-  return q.all('SELECT * FROM pulses WHERE enabled=1 AND (next_run_at IS NULL OR next_run_at <= ?)', iso);
+  return q.all('SELECT * FROM pulses WHERE enabled=1 AND (next_run_at IS NULL OR next_run_at <= ?)', iso).map(withConfig);
 }
 
 export function markPulseRun(pulse, status = 'ok', now = new Date()) {

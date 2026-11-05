@@ -24,26 +24,32 @@ async function killTree(pid) {
   }
 }
 
-/** 启动时恢复：把 running 但已死/租约过期的任务收回 */
+/** 启动时恢复：把 running 但已死/租约过期/根本没有活 run 的任务收回 */
 export function recover({ force = false } = {}) {
   const nowIso = new Date().toISOString();
   const rows = q.all("SELECT * FROM tasks WHERE status='running'");
   const recovered = [];
   for (const t of rows) {
     const expired = !t.lease_until || t.lease_until < nowIso;
-    const dead = !procAliveOfTask(t);
-    if (force || (expired && dead) || expired) {
+    // 「死」的三种情形：①没有 run 行（领了任务但没来得及执行就崩了）
+    // ②有 run 行但 pid 已不存在 ③租约过期
+    const liveRun = q.get("SELECT pid FROM runs WHERE task_id=? AND status='running' ORDER BY started_at DESC LIMIT 1", t.id);
+    const orphan = !liveRun;                       // 领了没跑
+    const dead = orphan || !pidAlive(liveRun?.pid); // 跑了但进程没了
+    if (force || dead || expired) {
       const attempt = t.attempt || 0;
       const canRetry = attempt < (t.max_attempts || 3);
       updateTask(t.id, {
         status: canRetry ? 'queued' : 'failed',
         lease_until: null,
-        last_error: canRetry ? 'daemon 重启/租约过期，已回收重排' : '租约过期且重试耗尽',
+        last_error: canRetry
+          ? `孤儿/死进程/租约过期，已回收重排（orphan=${orphan} dead=${dead} expired=${expired}）`
+          : '租约过期且重试耗尽',
       });
-      q.run("UPDATE runs SET status='killed', finished_at=?, error='租约过期回收' WHERE task_id=? AND status='running'", nowIso, t.id);
+      q.run("UPDATE runs SET status='killed', finished_at=?, error='回收' WHERE task_id=? AND status='running'", nowIso, t.id);
       emit({
         actor: 'watchdog', type: 'task.recovered', task_id: t.id, level: 'warn',
-        message: `${t.title} → ${canRetry ? 'queued(重排)' : 'failed'}`,
+        message: `${t.title} → ${canRetry ? 'queued(重排)' : 'failed'}（orphan=${orphan}）`,
       });
       recovered.push({ id: t.id, to: canRetry ? 'queued' : 'failed' });
     }
@@ -71,6 +77,20 @@ export async function tick() {
     const timeout = t.timeout_sec || cfg.settings.defaultTimeoutSec;
 
     const run = q.get("SELECT * FROM runs WHERE task_id=? AND status='running' ORDER BY started_at DESC LIMIT 1", t.id);
+
+    // 孤儿任务（领了但根本没有活 run）：30 秒内就回收，别等 15 分钟超时
+    if (!run && elapsed > 30) {
+      const attempt = t.attempt || 0;
+      const canRetry = attempt < (t.max_attempts || 3);
+      updateTask(t.id, {
+        status: canRetry ? 'queued' : 'failed', lease_until: null,
+        last_error: '孤儿任务：领取后没有产生 run 记录',
+      });
+      emit({ actor: 'watchdog', type: 'task.orphan_recovered', task_id: t.id, level: 'warn', message: `${t.title} → ${canRetry ? 'queued' : 'failed'}` });
+      actions.push({ task: t.id, action: 'orphan-recovered' });
+      continue;
+    }
+
     const tokens = (run?.tokens_in || 0) + (run?.tokens_out || 0);
     const overBudget = t.budget_tokens && tokens > t.budget_tokens;
     const overTime = elapsed > timeout + 30;

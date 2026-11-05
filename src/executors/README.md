@@ -42,7 +42,7 @@ export default {
 |---|---|---|---|
 | node | `node -v` | v24.14.1 | ok |
 | pwsh | `$PSVersionTable.PSVersion` | 7.6.9 | ok |
-| dsh | `dsh --profile headless "<p>"` | 0.1.5-rc.2 | ok，冷启动 ~53s，stdout 只输出最终答案 |
+| dsh | `dsh --profile headless "<p>"` | 0.1.5-rc.2 | ok，冷启动 21.7–53s（首次 53s，之后 22–37s），stdout 只输出最终答案 |
 | pi | `pi -p --mode json "<p>"` | 0.84.1 | ok，**需降级**（见坑 2），12s |
 | codex | `codex exec --skip-git-repo-check "<p>"` | codex-cli 0.153.4 | **阻塞**：上游 402 余额不足（见坑 3） |
 | claude | `claude -p "<p>"` | 2.1.195 | **阻塞**：401 认证失败（见坑 4） |
@@ -80,4 +80,6 @@ node --no-warnings tests/exec-smoke.mjs --slow   # 额外真跑 dsh --profile he
 ```
 
 - `PASS` = 断言成立；`FAIL` = 真失败；`SKIP` = 外部阻塞（上游 402 / CLI 无响应），此时断言的是"执行器如实上报失败"，不算通过。
-- 真实耗时：默认约 215–220s（pi 12s + claude 90s + codex 18s + shell/pwsh 若干次）。
+- 实测（2026-11-05 最终版）：
+  - `node --no-warnings tests/exec-smoke.mjs` → **50 PASS / 0 FAIL / 3 SKIP**（208.4s）
+  - `node --no-warnings tests/exec-smoke.mjs --slow` → **53 PASS / 0 FAIL / 2 SKIP**（207.1s，dsh 真跑 21.7s 回 `HIVE_DSH_OK`）

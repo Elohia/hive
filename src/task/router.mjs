@@ -65,6 +65,9 @@ export async function handleInline(item, t) {
     item.body ? `【原始信息】\n${item.body.slice(0, 4000)}` : '',
     `【来源】${item.source}${item.source_ref ? ' / ' + item.source_ref : ''}`,
     ctxText ? `【我的上下文】\n${ctxText}` : '',
+    t.needsTools
+      ? '注意：这件事看起来需要读取本地文件/跑命令/查仓库，但你这次只有推理能力、没有工具。请输出：①现在就能给的部分结论 ②还缺哪些证据（具体到文件/命令）③若要拿到那些证据，该由谁用什么方式去做。不要假装你查过。'
+      : '',
     '',
     t.level <= 1
       ? '请输出：①一段话概括这件事是什么 ②提取出的待办（若有）③建议归到哪个领域。简洁，不要客套。'
@@ -162,6 +165,16 @@ export async function processItem(itemOrId, { force = false, skipApproval = fals
 
   emit({ actor: 'router', type: 'route.start', item_id: item.id, message: `L${t.level} action=${t.primaryAction}` });
 
+  // 守中：fyi（纯情报）不派活、不花 token，只留在 Inbox 当背景信息。
+  // 除非显式 force（人工点了「派单执行」）。
+  if (item.kind === 'fyi' && !force) {
+    updateItem(item.id, {
+      autonomy_level: t.level, confidence: t.confidence, level_reason: t.reason,
+      meta: { ...(item.meta ? JSON.parse(item.meta) : {}), actions: t.actions, primaryAction: t.primaryAction, routed: 'info-only' },
+    }, { event: { type: 'item.info_only', actor: 'router', message: 'fyi 仅作背景信息，不派活' } });
+    return { route: 'skip', ok: true, detail: 'fyi 仅留档', triage: t };
+  }
+
   // 红线拦截：目标里点到 never_touch 区域 → 不派发，直接请示人
   const red = checkGoalAgainstRedlines(`${item.title}\n${item.body || ''}`);
   if (!red.ok) {
@@ -196,13 +209,15 @@ export async function processItem(itemOrId, { force = false, skipApproval = fals
     return { route: 'escalate', ok: true, approval: ap, triage: t };
   }
 
-  // 3) L1/L2 且不需要真实工具 → 纯推理内联（快、便宜）
-  if (t.level <= 2 && !t.needsTools) {
-    const r = await handleInline(item, t);
+  // 3) L1/L2 → 内联（便宜）。即使 needsTools 也不自动派进程执行器：
+  //    低等级 = 「理解与建议」，不该为每条情报起一个 60s 的 Agent。
+  //    需要真工具时，内联会把「缺少什么工具、该怎么补」写清楚，由人决定是否升级。
+  if (t.level <= 2) {
+    const r = await handleInline(item, { ...t, needsTools: t.needsTools });
     return { route: 'inline', ...r, triage: t };
   }
 
-  // 4) 需要真实工具 / L3+ → 派发给进程执行器
+  // 4) L3+ → 派发给进程执行器
   const executor = pickExecutor(t, execs);
   const p = await plan({
     item, level: t.level, availableExecutors: execs, defaultExecutor: executor,
@@ -241,11 +256,20 @@ export async function processItem(itemOrId, { force = false, skipApproval = fals
   return { route: 'dispatch', ok: true, triage: t, plan: p, tasks: created };
 }
 
-/** 批量：把 inbox 里未判定的都过一遍（低价值只判定不执行） */
-export async function triageInbox({ limit = 20, executeMinLevel = 1 } = {}) {
-  const items = listItems({ bucket: 'inbox', limit });
+/** 批量：把 inbox 里未判定的都过一遍（守中：噪声/低价值只判定不执行） */
+export async function triageInbox({ limit = 20 } = {}) {
+  const cfg = loadConfig();
+  const threshold = cfg.settings.quietThreshold ?? 6;
+  const items = listItems({ bucket: 'inbox', limit: 60 });
   const out = [];
   for (const it of items) {
+    if (out.length >= limit) break;
+    // 守中：噪声项（退信/订阅）与低优先级项只静默留档，不花 token 判定
+    const meta = it.meta ? (() => { try { return JSON.parse(it.meta); } catch { return {}; } })() : {};
+    if (meta.noisy || (it.priority ?? 0) < threshold) {
+      out.push({ id: it.id, title: it.title, route: 'quiet', level: it.autonomy_level, priority: it.priority });
+      continue;
+    }
     try {
       const r = await processItem(it);
       out.push({ id: it.id, title: it.title, route: r.route, level: r.triage?.level ?? it.autonomy_level });

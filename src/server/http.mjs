@@ -17,7 +17,7 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 import { loadConfig } from '../core/config.mjs';
-import { matchRoute, HttpError, HANDLED } from './api.mjs';
+import { matchRoute, HttpError, HANDLED, warmDoctorProbes } from './api.mjs';
 import { closeAll, clientCount } from './sse.mjs';
 
 const MIME = {
@@ -370,6 +370,8 @@ export function startServer(opts = {}) {
         return closing;
       };
       resolve({ server, cfg, webRoot, runtime, port: runtime.port, host, url, close });
+      // 后台预热执行器探测（约 6–7s）：之后打开「环境自检」直接命中缓存
+      warmDoctorProbes(cfg);
     };
     server.once('error', onError);
     server.once('listening', onListening);

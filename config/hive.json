@@ -98,6 +98,7 @@
     "dailyBudgetCny": 8,
     "budgetWarnRatio": 0.8,
     "quietThreshold": 6.0,
+    "dupTitleWindowHours": 24,
     "maxNotifyPerDay": 12,
     "approvalTtlHours": 72,
     "itemRetentionDays": 90,

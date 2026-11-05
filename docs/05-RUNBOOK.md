@@ -4,6 +4,13 @@
 > 所有命令都在 `D:\hive` 下执行；`$HIVE` 指 `D:\hive`。
 > 时间对照：程序内部写库/写日志用 **UTC（ISO 8601，结尾 `Z`）**，本地是 **+08:00**；看日志要把本地时间减 8 小时。
 
+> ⚠ **PowerShell 版本要求（实测 2026-11-05）**：`scripts/install-task.ps1` / `uninstall-task.ps1` 必须用 **PowerShell 7（`pwsh`）** 跑。
+> 用 Windows 自带的 `powershell.exe`（5.1）会因编码/语法差异报 `ParserError`（实测 `Unexpected token`）。
+> ```powershell
+> pwsh -NoProfile -File scripts\install-task.ps1      # ✅ 正确姿势
+> ```
+> `healthcheck.mjs` / `backup.mjs` / `restore.mjs` 是 Node 脚本，与 PowerShell 版本无关。
+
 ---
 
 ## 一、三分钟定位（先做这四步，90% 问题能定性）

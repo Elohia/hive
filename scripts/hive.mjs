@@ -324,13 +324,23 @@ async function cmdDaemon() {
   const rec = watchdog.recover();
   if (rec.length) logger.warn(`启动恢复 ${rec.length} 个任务`);
 
-  // HTTP 服务
+  // HTTP 服务：端口被占时自动往后找（长期常驻不能因为端口冲突就没了看板）
   const srv = await loadServer();
   let serverHandle = null;
-  const port = Number(flag('port', cfg.server.port));
+  const basePort = Number(flag('port', cfg.server.port));
   if (srv?.startServer) {
-    try { serverHandle = await srv.startServer({ port }); logger.info(`看板: http://127.0.0.1:${port}`); }
-    catch (e) { logger.error(`HTTP 启动失败: ${e.message}`); }
+    for (let i = 0; i < 10 && !serverHandle; i++) {
+      const port = basePort + i;
+      try {
+        serverHandle = await srv.startServer({ port });
+        logger.info(`看板: http://127.0.0.1:${port}`);
+        if (i > 0) emit({ actor: 'system', type: 'server.port_fallback', level: 'warn', message: `端口 ${basePort} 被占，改用 ${port}` });
+      } catch (e) {
+        if (!/EADDRINUSE|已被占用/.test(String(e.message))) { logger.error(`HTTP 启动失败: ${e.message}`); break; }
+        logger.warn(`端口 ${port} 被占用，尝试 ${port + 1}`);
+      }
+    }
+    if (!serverHandle) logger.error('HTTP 服务未能启动（10 个端口都被占用），后台逻辑继续运行');
   } else {
     logger.warn('HTTP 服务未就绪（src/server/http.mjs），本次仅跑后台逻辑');
   }
@@ -415,7 +425,7 @@ async function cmdDaemon() {
   }
 
   // 主循环
-  let lastWatchdog = 0, lastNotify = 0, lastPrune = 0;
+  let lastWatchdog = 0, lastNotify = 0, lastPrune = 0, draining = false;
   const tickMs = Math.max(1000, (cfg.settings.tickSec || 20) * 1000);
 
   while (!stopping) {
@@ -434,12 +444,23 @@ async function cmdDaemon() {
         await watchdog.tick();
       }
 
-      // 3) 派发队列
+      // 3) 派发队列 —— 不阻塞主循环：否则一个 15 分钟的任务会让
+      //    看门狗、脉冲、看板推送全部停摆（实测踩过）。
       const qn = q.get("SELECT COUNT(*) n FROM tasks WHERE status='queued'")?.n ?? 0;
-      if (qn > 0) {
+      if (qn > 0 && !draining) {
         const c = tc();
-        if (c.ratio < 1) await worker.drainQueue();
-        else emit({ actor: 'router', type: 'budget.blocked', level: 'warn', message: '预算耗尽，暂停派发' });
+        if (c.ratio < 1) {
+          draining = true;
+          worker.drainQueue()
+            .then((r) => { if (r?.length) logger.info(`drain 本轮完成 ${r.filter((x) => x.ok).length}/${r.length}`); })
+            .catch((e) => {
+              logger.error(`drainQueue 异常: ${e.message}`);
+              emit({ actor: 'worker', type: 'daemon.drain_error', level: 'error', message: String(e.message).slice(0, 400) });
+            })
+            .finally(() => { draining = false; });
+        } else {
+          emit({ actor: 'router', type: 'budget.blocked', level: 'warn', message: '预算耗尽，暂停派发' });
+        }
       }
 
       // 4) 待拍板提醒（最多每 10 分钟一次）

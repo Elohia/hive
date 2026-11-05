@@ -195,8 +195,9 @@ function recentEvents(opts) {
 
 // ───────────────────────────── 执行器 / 传感器探测 ─────────────────────────────
 
-const PROBE_TTL_MS = 30000;
-let _probeCache = { at: 0, value: null };
+const PROBE_TTL_MS = 60000;
+let _probeCache = { at: 0, value: null, path: '' };
+let _probeInFlight = null;
 
 function normalizeProbes(raw) {
   if (!raw || typeof raw !== 'object') return {};
@@ -217,49 +218,100 @@ function normalizeProbes(raw) {
   return out;
 }
 
-/** 返回 {ready:boolean, reason?, probes?:{name:{ok,reason,version}}, path} —— 绝不抛 */
+/** 返回 {ready:boolean, reason?, probes?:{name:{ok,reason,version}}, path} —— 绝不抛
+ *
+ * 真实 probe() 要逐个 spawn 版本命令（本机 9 个执行器约 6–7 秒），
+ * 所以：① 结果缓 60 秒；② 并发调用共享同一个 in-flight promise；
+ * ③ 服务启动时用 warmExecutorsProbe() 预热，点开看板「环境自检」不再干等。
+ */
 export async function probeExecutors(cfg, { force = false } = {}) {
   const cacheKey = path.join(cfg.codeRoot || cfg.home, 'src', 'executors', 'index.mjs');
   if (!force && _probeCache.value && Date.now() - _probeCache.at < PROBE_TTL_MS && _probeCache.value.path === cacheKey) {
     return _probeCache.value;
   }
-  const load = await loadModule(cfg, 'src/executors/index.mjs');
-  let value;
-  if (!load.ok) {
-    value = {
-      ready: false,
-      reason: 'executor registry not ready',
-      detail: load.reason,
-      path: load.path,
-      probes: {},
-    };
-  } else {
-    const probe = pickFn(load.mod, ['probe', 'probeAll']);
-    if (typeof probe !== 'function') {
+  if (_probeInFlight) return _probeInFlight;
+
+  _probeInFlight = (async () => {
+    const load = await loadModule(cfg, 'src/executors/index.mjs');
+    let value;
+    if (!load.ok) {
       value = {
         ready: false,
         reason: 'executor registry not ready',
-        detail: 'src/executors/index.mjs 未导出 probe()',
+        detail: load.reason,
         path: load.path,
         probes: {},
       };
     } else {
-      try {
-        const raw = await withTimeout(Promise.resolve(probe(cfg)), 20000, 'executor probe');
-        value = { ready: true, reason: null, path: load.path, probes: normalizeProbes(raw) };
-      } catch (e) {
+      const probe = pickFn(load.mod, ['probe', 'probeAll']);
+      if (typeof probe !== 'function') {
         value = {
           ready: false,
           reason: 'executor registry not ready',
-          detail: `probe() 失败: ${e.message}`,
+          detail: 'src/executors/index.mjs 未导出 probe()',
           path: load.path,
           probes: {},
         };
+      } else {
+        try {
+          const raw = await withTimeout(Promise.resolve(probe(cfg)), 20000, 'executor probe');
+          value = { ready: true, reason: null, path: load.path, probes: normalizeProbes(raw) };
+        } catch (e) {
+          value = {
+            ready: false,
+            reason: 'executor registry not ready',
+            detail: `probe() 失败: ${e.message}`,
+            path: load.path,
+            probes: {},
+          };
+        }
       }
     }
-  }
-  _probeCache = { at: Date.now(), value };
-  return value;
+    _probeCache = { at: Date.now(), value };
+    return value;
+  })();
+
+  try { return await _probeInFlight; }
+  finally { _probeInFlight = null; }
+}
+
+// ── 外部通道探测（which + git --version）也缓存 60s，并支持启动预热 ──
+const CHANNEL_TTL_MS = 60000;
+const CHANNEL_DEFS = [
+  ['agentlyCli', 'agently-cli', 'QQ 邮箱通道（mail sensor 依赖）'],
+  ['git', 'git', 'git sensor 依赖'],
+  ['pwsh', 'pwsh', 'shell 执行器依赖'],
+  ['dsh', 'dsh', 'dsh 执行器依赖'],
+  ['pi', 'pi', 'pi 执行器依赖'],
+  ['codex', 'codex', 'codex 执行器依赖'],
+  ['claude', 'claude', 'claude 执行器依赖'],
+];
+let _chanCache = { at: 0, value: null };
+let _chanInFlight = null;
+
+async function channelsInfo({ force = false } = {}) {
+  if (!force && _chanCache.value && Date.now() - _chanCache.at < CHANNEL_TTL_MS) return _chanCache.value;
+  if (_chanInFlight) return _chanInFlight;
+  _chanInFlight = (async () => {
+    // 全部并行（异步 spawn）；串行 spawn 在 Windows 上会让 /api/doctor 拖到数秒
+    const found = await Promise.all(CHANNEL_DEFS.map(async ([key, cmd, note]) => [key, { ...(await which(cmd)), note }]));
+    const ch = Object.fromEntries(found);
+    const gitV = await commandVersion('git', ['--version']);
+    ch.git = { ...ch.git, version: gitV.version, versionOk: gitV.ok };
+    _chanCache = { at: Date.now(), value: ch };
+    return ch;
+  })();
+  try { return await _chanInFlight; }
+  finally { _chanInFlight = null; }
+}
+
+/** 服务启动后预热「环境自检」需要的两类慢探测（执行器 probe + 外部通道 which） */
+let _warmStarted = false;
+export function warmDoctorProbes(cfg) {
+  if (_warmStarted) return;
+  _warmStarted = true;
+  try { probeExecutors(cfg).catch(() => {}); } catch { /* noop */ }
+  try { channelsInfo().catch(() => {}); } catch { /* noop */ }
 }
 
 async function sensorInventory(cfg) {
@@ -810,24 +862,11 @@ async function doctor(ctx) {
   try { out.db.sizeBytes = fs.statSync(cfg.resolved.db).size; } catch { /* 未建库 */ }
   try { out.db.walBytes = fs.statSync(cfg.resolved.db + '-wal').size; } catch { /* 无 WAL */ }
 
-  out.executors = await probeExecutors(cfg, { force: true });
+  out.executors = await probeExecutors(cfg);
   out.sensors = await sensorInventory(cfg);
 
-  // 通道探测：全部并行（异步 spawn），避免串行 spawn 把 /api/doctor 拖到数秒
-  const channelDefs = [
-    ['agentlyCli', 'agently-cli', 'QQ 邮箱通道（mail sensor 依赖）'],
-    ['git', 'git', 'git sensor 依赖'],
-    ['pwsh', 'pwsh', 'shell 执行器依赖'],
-    ['dsh', 'dsh', 'dsh 执行器依赖'],
-    ['pi', 'pi', 'pi 执行器依赖'],
-    ['codex', 'codex', 'codex 执行器依赖'],
-    ['claude', 'claude', 'claude 执行器依赖'],
-  ];
-  const found = await Promise.all(channelDefs.map(async ([key, cmd, note]) => [key, { ...(await which(cmd)), note }]));
-  const ch = Object.fromEntries(found);
-  const gitV = await commandVersion('git', ['--version']);
-  ch.git = { ...ch.git, version: gitV.version, versionOk: gitV.ok };
-  out.channels = ch;
+  // 通道探测：并行 + 60s 缓存（启动时已预热；实测冷启动 ~2.4s，命中缓存 ~0ms）
+  out.channels = await channelsInfo();
 
   const enabledExec = Object.entries(cfg.executors || {}).filter(([, v]) => v && v.enabled !== false);
   const enabledSources = Object.entries(cfg.sources || {}).filter(([, v]) => v && v.enabled).map(([k]) => k);
@@ -862,7 +901,7 @@ async function doctor(ctx) {
     if (!probes.length) out.warnings.push('执行器注册表为空（probe() 未返回任何执行器）');
   }
   if (!out.sensors.ready) out.warnings.push(out.sensors.reason);
-  for (const [name, c] of Object.entries(ch)) {
+  for (const [name, c] of Object.entries(out.channels || {})) {
     if (!c.ok) out.warnings.push(`通道缺失: ${name}（${c.note}）`);
   }
   if (!cfg.server?.token) out.notes.push('当前无 X-Hive-Token 校验（仅监听 127.0.0.1，本地免密）');

@@ -1355,7 +1355,7 @@ function closeDrawer() {
 }
 
 async function openDoctor() {
-  showDrawer('<div class="detail-empty">正在探测环境（执行器 / 通道 / 数据库）…</div>');
+  showDrawer('<div class="detail-empty">正在探测环境（执行器 / 通道 / 数据库）…<br><span style="opacity:.7">首次探测要逐个 spawn 版本命令，约 5–10 秒；之后 60 秒内命中缓存。</span></div>');
   try {
     const d = await api('/api/doctor');
     state.doctor = d;

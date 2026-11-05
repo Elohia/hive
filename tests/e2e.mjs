@@ -136,6 +136,10 @@ section('5. 自主执行（Worker → Run → Artifact）');
   ok('run.resultFile', fs.existsSync(path.join(after.output_dir || '', 'result.json')));
   const runRow = db.q.get('SELECT * FROM runs WHERE task_id=? ORDER BY started_at DESC LIMIT 1', t.id);
   ok('run.recorded', !!runRow && runRow.status === 'ok', `${runRow?.status} ${runRow?.duration_ms}ms`);
+  // 回归：onSpawn 曾经误用 finishRun 把 run 立刻标 ok → 任务被当孤儿回收 → 无限重跑
+  const runCount = db.q.get('SELECT COUNT(*) n FROM runs WHERE task_id=?', t.id)?.n ?? 0;
+  ok('run.single_per_attempt', runCount === 1, `runs=${runCount} attempt=${db.q.get('SELECT attempt FROM tasks WHERE id=?', t.id)?.attempt}`);
+  ok('task.attempt_is_one', (db.q.get('SELECT attempt FROM tasks WHERE id=?', t.id)?.attempt) === 1, '未被重复领取');
 }
 
 // ============================================================

@@ -26,17 +26,29 @@ HIVE 把本机已有的 Agent 生态组合成一个常驻系统：
 
 | 模块 | 状态 | 入口 |
 |---|---|---|
-| 核心（配置/DB/事件/LLM/凭据） | ✅ 已实测 | `src/core/` |
+| 核心（配置/DB/事件/LLM/凭据/红线守卫） | ✅ 已实测 | `src/core/` |
 | 任务中心（items/tasks/runs/approvals/events） | ✅ 已实测 | `src/task/taskcenter.mjs` |
-| L1–L5 判定 | ✅ 已实测（规则优先 + LLM 兜底） | `src/task/triage.mjs` |
-| 规划器（拆 DAG） | ✅ 已实测 | `src/task/planner.mjs` |
-| Router / Worker / Watchdog | ✅ 已实测 | `src/task/{router,worker,watchdog}.mjs` |
-| 脉冲调度 | ✅ 已实测（12 条脉冲） | `src/task/pulse.mjs` |
-| 传感器 6 路 | ✅ 已实测（真实数据） | `src/sensors/` |
-| 执行器 | 🚧 建设中 | `src/executors/` |
-| HITL 通知（Toast） | ✅ 已实测 | `src/hitl/notify.mjs` |
-| 看板 + HTTP API | ✅ 已实测 | `src/server/`, `web/` |
-| 运维（安装/自检/备份恢复） | 🚧 建设中 | `scripts/` |
+| L1–L5 判定 | ✅ 已实测（规则优先 + LLM 兜底 + 能力闸门） | `src/task/triage.mjs` |
+| 规划器（拆 DAG + 前置产出注入） | ✅ 已实测 | `src/task/planner.mjs` |
+| Router / Worker / Watchdog（含退避、车道、租约、崩溃恢复） | ✅ 已实测 | `src/task/{router,worker,watchdog}.mjs` |
+| 脉冲调度（12 条随机启动） | ✅ 已实测 | `src/task/pulse.mjs` |
+| 传感器 6 路（mail/git/docs/calendar/pulses_local/self） | ✅ 已实测（真实数据） | `src/sensors/` |
+| 执行器 6 个（llm/dsh/pi/codex/claude/shell） | ✅ 已实测（dsh 真跑通） | `src/executors/` |
+| HITL 通知（Windows Toast） | ✅ 已实测弹出 | `src/hitl/notify.mjs` |
+| 个人上下文归纳 | ✅ 已实测（归纳出 11 项真实结论） | `src/context/builder.mjs` |
+| 看板 + HTTP API + SSE | ✅ 已实测 | `src/server/`, `web/` |
+| 运维（自检/备份恢复/开机自启） | ✅ 已实测（计划任务已注册） | `scripts/` |
+| 测试 | ✅ 5 套全绿 | `tests/` |
+
+**测试结果（2026-11-05 实测）**
+
+| 套件 | 结果 | 耗时 |
+|---|---|---|
+| `tests/smoke-core.mjs` | **10/10 PASS** | 1.6s |
+| `tests/sensors-smoke.mjs` | **29/29 PASS** | 19s |
+| `tests/exec-smoke.mjs` | **50 PASS / 0 FAIL / 3 SKIP** | 172s |
+| `tests/server-smoke.mjs` | **89/89 PASS** | 10.3s |
+| `tests/e2e.mjs`（端到端闭环） | **40/40 PASS** | 18s |
 
 详细交付状态见 `README` 末尾「实测记录」。
 

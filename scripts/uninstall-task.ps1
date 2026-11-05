@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   卸载 HIVE 守护进程计划任务（install-task.ps1 -Uninstall 的薄壳，避免两处逻辑分叉）。
 
