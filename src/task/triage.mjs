@@ -1,7 +1,8 @@
-// src/task/triage.mjs — L1..L5 自主等级判定（确定性优先，LLM 仅在低置信时兜底）
+// src/task/triage.mjs — L1..L5 自主等级判定（确定性优先，本地 JEV 预筛，LLM 仅在低置信时兜底）
 import { q } from '../core/db.mjs';
 import { loadConfig } from '../core/config.mjs';
 import { chat, parseJson } from '../core/llm.mjs';
+import * as jev from '../triage/jev.mjs';
 
 /** 动作意图关键词表：命中即认为请求包含该动作。顺序 = 优先级（越靠后越“重”）
  *  英文一律加 \b 词边界 —— 否则 `post` 会命中 "PostMaster"，`read` 会命中 "already"。 */
@@ -133,7 +134,37 @@ export async function triage(item, { availableExecutors = [], allowLlm = true } 
   let confidence = Math.min(0.95, 0.55 + hitCount * 0.08 + (item.kind ? 0.08 : 0));
 
   let byLlm = false;
-  if (confidence < 0.6 && allowLlm) {
+  let byJev = false;
+  let jevSignal = null;
+
+  // ① 本地 JEV 预筛：零 token、热点 300–800ms。
+  //    ⚠ 它做不了「L1–L5 抽象多档」判定（实测概率近似均匀，topProb 0.28–0.31 / 基线 0.2），
+  //    所以这里只用它的两个**具体二元**信号：噪音概率、是否需要外部动作。
+  if (jev.shouldUseJev(loadConfig(), item)) {
+    try {
+      const j = await jev.judge(item, {});
+      if (j) {
+        jevSignal = j;
+        // 噪音 → 直接压到 L1（它是 noul 二元题，0.8 以上才算明确）
+        if (j.noiseDecided) {
+          const before = level;
+          level = 1;
+          reasons.push(`JEV 判为噪音（P=${j.noise}，${j.ms}ms，零 token）→ 压到 L1${before > 1 ? `（原 L${before}）` : ''}`);
+          byJev = true;
+        } else if (j.actDecided && j.kind === 'act') {
+          // 明确的「需外部动作」→ 只做提示，等级仍由规则决定（小模型不拍等级）
+          reasons.push(`JEV 判「需外部动作」（P=${j.act}，${j.ms}ms）`);
+        } else if (j.noise !== null && j.noise < 0.3) {
+          reasons.push(`JEV 判「非噪音」（P(噪音)=${j.noise}）`);
+        }
+        // 参考证据（不参与决策）
+        if (j.level) reasons.push(`JEV 参考等级 L${j.level}（topProb ${j.levelTopProb}，仅参考）`);
+      }
+    } catch { /* JEV 不可用绝不影响判定 */ }
+  }
+
+  // ② 大模型兜底：JEV 没给出结论、且规则置信仍低时才烧 token
+  if (!byJev && confidence < 0.6 && allowLlm) {
     try {
       const r = await chat({
         tier: 'cheap',
@@ -178,6 +209,8 @@ export async function triage(item, { availableExecutors = [], allowLlm = true } 
   return {
     level, confidence: +confidence.toFixed(2), reason: reasons.join('；'),
     actions, primaryAction: primary, needApproval, capabilitiesMissing: missing, byLlm, needsTools,
+    byJev, jev: jevSignal,
+    triageSource: byJev ? 'jev' : (byLlm ? 'llm' : 'rule'),
     domain: item.domain || guessDomain(text),
   };
 }

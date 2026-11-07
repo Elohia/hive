@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>它攒了 45 条待办，一条都没执行。</title>
+<style>
+  :root{
+    --bg:#ffffff; --fg:#0f1419; --dim:#536471; --line:#eff3f4; --code-bg:#f7f9f9;
+    --quote:#536471; --quote-bg:#f7f9f9; --link:#1d6fd6; --btn:#0f1419; --btn-fg:#fff;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#15202b; --fg:#e7e9ea; --dim:#8b98a5; --line:#263340; --code-bg:#1c2a35;
+           --quote:#a7b4c0; --quote-bg:#1c2a35; --link:#7cb4f5; --btn:#e7e9ea; --btn-fg:#15202b; }
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--fg)}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB",
+                "Microsoft YaHei","Source Han Sans SC",system-ui,sans-serif;
+    font-size:17px; line-height:1.9; -webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility;
+  }
+  .wrap{max-width:680px;margin:0 auto;padding:0 22px 96px}
+
+  /* 顶部工具条 */
+  .bar{position:sticky;top:0;z-index:9;background:color-mix(in srgb, var(--bg) 88%, transparent);
+       backdrop-filter:blur(10px);border-bottom:1px solid var(--line);
+       display:flex;align-items:center;gap:10px;padding:10px 0;margin-bottom:26px}
+  .meta{font-size:12.5px;color:var(--dim);letter-spacing:.02em}
+  .spacer{flex:1}
+  button{font:inherit;font-size:13px;font-weight:600;cursor:pointer;border:1px solid var(--line);
+         background:transparent;color:var(--fg);border-radius:999px;padding:7px 14px;transition:.15s}
+  button:hover{border-color:var(--dim)}
+  button.primary{background:var(--btn);color:var(--btn-fg);border-color:var(--btn)}
+  button.done{background:#0a7f4b;border-color:#0a7f4b;color:#fff}
+
+  /* 作者行 */
+  .author{display:flex;align-items:center;gap:12px;margin:8px 0 26px}
+  .author .name{font-weight:800;font-size:15.5px}
+  .author .handle{color:var(--dim);font-size:14px}
+  .badge{display:inline-block;width:15px;height:15px;vertical-align:-2px;margin-left:3px}
+
+  h1{font-size:27px;line-height:1.45;margin:0 0 22px;font-weight:800;letter-spacing:-.01em}
+  h2{font-size:21px;line-height:1.5;margin:44px 0 14px;font-weight:800;letter-spacing:-.01em}
+  h3{font-size:18px;margin:32px 0 10px;font-weight:700}
+  p{margin:0 0 20px}
+  strong{font-weight:800}
+  a{color:var(--link);text-decoration:none;border-bottom:1px solid transparent}
+  a:hover{border-bottom-color:var(--link)}
+  hr{border:0;border-top:1px solid var(--line);margin:36px 0}
+
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+       font-size:14.5px;background:var(--code-bg);padding:2px 6px;border-radius:5px}
+  pre.code{background:var(--code-bg);border:1px solid var(--line);border-radius:10px;
+           padding:14px 16px;overflow:auto;margin:0 0 22px;position:relative}
+  pre.code code{background:none;padding:0;font-size:13.5px;line-height:1.75;white-space:pre}
+  pre.code[data-lang]::after{content:attr(data-lang);position:absolute;top:8px;right:12px;
+           font-size:11px;color:var(--dim);font-family:ui-monospace,monospace}
+
+  blockquote{margin:0 0 22px;padding:12px 16px;background:var(--quote-bg);
+             border-left:3px solid var(--dim);border-radius:0 8px 8px 0;color:var(--quote)}
+  blockquote p:last-child{margin:0}
+
+  ul,ol{margin:0 0 20px;padding-left:26px}
+  li{margin:6px 0}
+
+  .toast{position:fixed;left:50%;bottom:26px;transform:translate(-50%,20px);opacity:0;
+         background:#0a7f4b;color:#fff;font-size:13.5px;font-weight:600;padding:10px 18px;
+         border-radius:999px;transition:.22s;pointer-events:none}
+  .toast.show{opacity:1;transform:translate(-50%,0)}
+
+  @media print{
+    .bar,.toast{display:none}
+    html,body{background:#fff;color:#000}
+    .wrap{max-width:none;padding:0}
+    body{font-size:12pt;line-height:1.7}
+    h2{page-break-after:avoid}
+    pre.code{page-break-inside:avoid}
+  }
+  @media (max-width:560px){
+    body{font-size:16px}
+    h1{font-size:23px}
+    .wrap{padding:0 16px 72px}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="bar">
+    <span class="meta" id="counts">1372 汉字 · 2662 字符</span>
+    <span class="spacer"></span>
+    <button id="copy" class="primary">复制全文</button>
+    <button id="print">打印 / PDF</button>
+  </div>
+
+  <div class="author">
+    <svg viewBox="0 0 32 32" width="44" height="44" aria-hidden="true">
+  <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#ffb648"/><stop offset="1" stop-color="#f2701f"/>
+  </linearGradient></defs>
+  <path d="M16 2.6 27 9v14L16 29.4 5 23V9z" fill="url(#g)"/>
+  <path d="M16 9.4 22.6 13v7L16 23.6 9.4 20v-7z" fill="none" stroke="#1a1206" stroke-width="1.6" stroke-linejoin="round"/>
+  <circle cx="16" cy="16.4" r="1.9" fill="#1a1206"/>
+</svg>
+    <div>
+      <div class="name">幻<svg class="badge" viewBox="0 0 22 22" aria-hidden="true"><path fill="#1d9bf0" d="M12.1 1.5 14.4 3l2.7-.6 1.3 2.4 2.6 1 .2 2.7 2 1.9-1.4 2.3.5 2.7-2.4 1.4-1 2.6-2.7.1-1.9 2-2.3-1.3-2.7.5-1.4-2.4-2.6-1-.1-2.7-2-1.9L2.8 9.9l-.5-2.7L4.8 5.8l1-2.6 2.7-.1z"/><path fill="#fff" d="m9.9 14.6-2.8-2.8 1.2-1.2 1.6 1.6 3.9-3.9 1.2 1.2z"/></svg></div>
+      <div class="handle">@ElohiaO_o</div>
+    </div>
+  </div>
+
+  <h1>它攒了 45 条待办，一条都没执行。</h1>
+
+<p>两天前我把 HIVE 发出去时，说它「会主动找活干」。今天打开看板，收件箱 45 条，最老的躺了 1 天 18 小时，对应任务数：0。</p>
+<p>不是它偷懒。是它在很努力地<strong>假装工作</strong>，而我没看出来。</p>
+<p>下面是三个我踩到的真坑。都是&quot;看起来一切正常、其实什么都没发生&quot;的那种。</p>
+<h2>一、一分钟跑了 14 次同一个判定</h2>
+<p>插件内我写了个 3 秒一跳的调度循环：<code>setInterval(() =&gt; tick(), 3000)</code>。</p>
+<p><code>tick()</code> 是 async 的，我一贯不 await —— 反正下一跳会接着跑。</p>
+<p>问题是一轮判定要调好几次模型，耗时以分钟计。3 秒起一跳，上一跳还没完就起了下一跳。翻了事件日志：</p>
+<pre class="code"><code>13:37:44 triage 判定 15 项
+13:37:53 triage 判定 15 项
+13:38:01 triage 判定 15 项
+13:38:05 triage 判定 15 项
+13:38:10 triage 判定 15 项 ×2</code></pre>
+<p>一分钟 14 次。十几轮并发，抢的是<strong>我自己在用的那个模型服务</strong>。</p>
+<p>症状不是报错，是「我切会话时对话变卡、HIVE 看着像掉线」。我甚至还去查了宿主的连接状态、查了插件路由，一通排查——查的方向全错。</p>
+<p>修法很简单：一个互斥锁，加把 <code>setInterval</code> 改成自续期 <code>setTimeout</code>（跑完再排下一拍）。三行。</p>
+<p>教训：<strong>并发不报错，它只是变慢</strong>。而&quot;变慢&quot;的症状会把你指向完全错误的地方。</p>
+<h2>二、我让一个 0.5B 模型当判官</h2>
+<p>系统要给每件事判 L1–L5 的自主等级。我嫌调用大模型贵，本机有个现成的 <code>jevlocal-0.5b</code>（决策模型的本地复现，RTX2060 上热点 300–800ms，零 token 成本）。</p>
+<p>它的文档写着：英文 choice/noul 可用（sst2 85% / agnews 68%），置信带分离优秀（高带 acc 88% / 低带 5%）。</p>
+<p>听起来正合适。我接进去，还专门设计了「它够确信就用它的、不够就交回大模型」的闸门。</p>
+<p>然后拿真实事项打：</p>
+<pre class="code"><code>L1–L5 五档：      topProb 0.28 / 0.31 / 0.36   ← 基线 1/5 = 0.2
+噪音判定(noul)： 退信 0.500 / 营销 0.608 / 真实合同 0.637
+是否外部动作：    0.569 / 0.657 / 0.672</code></pre>
+<p>三类东西挤在同一个数上，<strong>分不开</strong>。五档分布近似均匀，等于没信息。</p>
+<p>sst2 的 85% 是<strong>影评情感</strong>——具体、二元、同分布。我拿它判&quot;这封邮件要不要处理&quot;，是彻底的 out-of-distribution。</p>
+<p>代码我留着，但默认关掉了。注释里写的是：</p>
+<blockquote>实测它对本项目的判定没有判别力。代码保留是为了防止后人再踩；英文二元任务可直接复用。</blockquote>
+<p>顺手还抓到两个更隐蔽的 bug：</p>
+<p><strong>bug 1</strong>：那个置信度 <code>confidence = 1 − H(p)/lnK</code>，K 是<strong>选项数</strong>。五档判定的上限只有 0.24（最确定的情况下 p=[0.6,.1,.1,.1,.1] 也只有 0.237）。我拿 0.55 当阈值——<strong>永远不可能达标</strong>。</p>
+<p><strong>bug 2</strong>：规则层的置信度是 <code>0.55 + 命中数 × 0.08</code>。1 处关键词命中就给 0.63–0.71。「置信 &lt; 0.6 才让大模型兜底」这个闸门，<strong>几乎从不触发</strong>。</p>
+<p>也就是说：我以为有个大模型在兜底，实际上它一次都没上过场。</p>
+<h2>三、只进不出</h2>
+<p>最要命的是这个，而且它是我<strong>当初主动写进设计</strong>的。</p>
+<p>系统里有个字段叫 <code>kind='fyi'</code>——纯情报，判定完只留档、不派活。当时的注释是这么写的：</p>
+<blockquote>守中：fyi 不派活、不花 token，只留在 Inbox 当背景信息。</blockquote>
+<p>听起来很合理。但我的六路传感器里，文档那一路扫的是 <code>D:\pi-agent\reports</code>——那个项目每天产出 30 到 50 份报告。<strong>每一份都是一个 fyi</strong>。90% 的入库都是 fyi。</p>
+<p>于是：判定跑了、结论写了、状态没变、永久占位。</p>
+<p>41 条里：读档 23 条、低优先级归档 17 条、真需要处理 1 条。再加上另外两处：</p>
+<ul><li>优先级低于阈值的项，判为 <code>quiet</code> 后<strong>只 <code>continue</code></strong>，不落状态，每轮重新遍历</li><li>遍历按 <code>priority DESC</code> 取前 60 条，名额被同一批高优先级占满，12 条未判定的<strong>永远轮到</strong></li></ul>
+<p>还有一个更隐蔽的：<code>bucket</code> 和 <code>status</code> 是两个维度。我归档时只改了 <code>status='archived'</code>，可 KPI 数的是 <code>bucket='inbox'</code>——<strong>归档完看板照样显示 41 条</strong>。</p>
+<h2>四、修完之后的数字</h2>
+<p>加了四档收敛规则（重复折叠、过期情报 1 天、通用老化 3 天、容量上限 60 条），每个动作都写事件、只归档不删除。</p>
+<p>真实库实跑：</p>
+<pre class="code"><code>第一轮：41 → 21    （20 条 fyi 读档）
+第二轮：21 →  1    （3 条读档 + 17 条低优先级归档）
+今日花费：¥0.0000</code></pre>
+<p><strong>一分钱没花</strong>。清库存没走模型——因为该走模型的都不是库存。</p>
+<p>最终：待办只剩个位数、已完成 65、已归档 21。</p>
+<h2>五、三个可以带走的判断</h2>
+<p><strong>一、主动性系统的失败模式，是&quot;安静&quot;。</strong></p>
+<p>它不会崩，不会报错，只是慢慢不出活。所以监控的不是正确率，是<strong>吞吐</strong>：这一轮进来了多少、出去多少。只进不出就是故障，哪怕每一步都&quot;成功&quot;。</p>
+<p><strong>二、并发不报错，只变慢。而&quot;变慢&quot;会把你指向错误的方向。</strong></p>
+<p>我花了半小时查连接和路由，真正的问题在一个没 await 的 <code>setInterval</code> 里。</p>
+<p><strong>三、用一个小模型省钱，前提是它的能力边界真的覆盖你的任务。</strong></p>
+<p>同一个模型在 sst2 上 85%，在我这里的分布近似均匀。<strong>换个题型就是换了个模型</strong>。要接就得先测，测的方法还得和真实用例同分布——否则你得到的是一个永远不触发的闸门。</p>
+<hr>
+<p>现在这套东西是 DSH 的一个插件，装完左侧栏多一个蜂巢图标，不需要另配 API key（借宿主已配的模型），可选执行器（Pi / Codex / Claude Code / Grok Bot）全都可以不装。</p>
+<p>代码在 GitHub：github.com/Elohia/dsh-plugin-hive ，MIT。</p>
+<p>我不觉得这算&quot;让 AI 更聪明&quot;。</p>
+<p>它改变的是：<strong>我以前要自己知道今天该干什么，现在不用了；代价是我得能看出它什么时候在假装干活。</strong></p>
+
+</div>
+
+<div class="toast" id="toast">已复制，可直接贴进 X</div>
+
+<script>
+  const PLAIN = "两天前我把 HIVE 发出去时，说它「会主动找活干」。今天打开看板，收件箱 45 条，最老的躺了 1 天 18 小时，对应任务数：0。\n\n不是它偷懒。是它在很努力地假装工作，而我没看出来。\n\n下面是三个我踩到的真坑。都是\"看起来一切正常、其实什么都没发生\"的那种。\n\n一、一分钟跑了 14 次同一个判定\n\n插件内我写了个 3 秒一跳的调度循环：setInterval(() => tick(), 3000)。\n\ntick() 是 async 的，我一贯不 await —— 反正下一跳会接着跑。\n\n问题是一轮判定要调好几次模型，耗时以分钟计。3 秒起一跳，上一跳还没完就起了下一跳。翻了事件日志：\n\n13:37:44 triage 判定 15 项\n13:37:53 triage 判定 15 项\n13:38:01 triage 判定 15 项\n13:38:05 triage 判定 15 项\n13:38:10 triage 判定 15 项 ×2\n\n一分钟 14 次。十几轮并发，抢的是我自己在用的那个模型服务。\n\n症状不是报错，是「我切会话时对话变卡、HIVE 看着像掉线」。我甚至还去查了宿主的连接状态、查了插件路由，一通排查——查的方向全错。\n\n修法很简单：一个互斥锁，加把 setInterval 改成自续期 setTimeout（跑完再排下一拍）。三行。\n\n教训：并发不报错，它只是变慢。而\"变慢\"的症状会把你指向完全错误的地方。\n\n二、我让一个 0.5B 模型当判官\n\n系统要给每件事判 L1–L5 的自主等级。我嫌调用大模型贵，本机有个现成的 jevlocal-0.5b（决策模型的本地复现，RTX2060 上热点 300–800ms，零 token 成本）。\n\n它的文档写着：英文 choice/noul 可用（sst2 85% / agnews 68%），置信带分离优秀（高带 acc 88% / 低带 5%）。\n\n听起来正合适。我接进去，还专门设计了「它够确信就用它的、不够就交回大模型」的闸门。\n\n然后拿真实事项打：\n\nL1–L5 五档：      topProb 0.28 / 0.31 / 0.36   ← 基线 1/5 = 0.2\n噪音判定(noul)： 退信 0.500 / 营销 0.608 / 真实合同 0.637\n是否外部动作：    0.569 / 0.657 / 0.672\n\n三类东西挤在同一个数上，分不开。五档分布近似均匀，等于没信息。\n\nsst2 的 85% 是影评情感——具体、二元、同分布。我拿它判\"这封邮件要不要处理\"，是彻底的 out-of-distribution。\n\n代码我留着，但默认关掉了。注释里写的是：\n\n实测它对本项目的判定没有判别力。代码保留是为了防止后人再踩；英文二元任务可直接复用。\n\n顺手还抓到两个更隐蔽的 bug：\n\nbug 1：那个置信度 confidence = 1 − H(p)/lnK，K 是选项数。五档判定的上限只有 0.24（最确定的情况下 p=[0.6,.1,.1,.1,.1] 也只有 0.237）。我拿 0.55 当阈值——永远不可能达标。\n\nbug 2：规则层的置信度是 0.55 + 命中数 × 0.08。1 处关键词命中就给 0.63–0.71。「置信 < 0.6 才让大模型兜底」这个闸门，几乎从不触发。\n\n也就是说：我以为有个大模型在兜底，实际上它一次都没上过场。\n\n三、只进不出\n\n最要命的是这个，而且它是我当初主动写进设计的。\n\n系统里有个字段叫 kind='fyi'——纯情报，判定完只留档、不派活。当时的注释是这么写的：\n\n守中：fyi 不派活、不花 token，只留在 Inbox 当背景信息。\n\n听起来很合理。但我的六路传感器里，文档那一路扫的是 D:\\pi-agent\\reports——那个项目每天产出 30 到 50 份报告。每一份都是一个 fyi。90% 的入库都是 fyi。\n\n于是：判定跑了、结论写了、状态没变、永久占位。\n\n41 条里：读档 23 条、低优先级归档 17 条、真需要处理 1 条。再加上另外两处：\n\n· 优先级低于阈值的项，判为 quiet 后只 continue，不落状态，每轮重新遍历\n· 遍历按 priority DESC 取前 60 条，名额被同一批高优先级占满，12 条未判定的永远轮到\n\n还有一个更隐蔽的：bucket 和 status 是两个维度。我归档时只改了 status='archived'，可 KPI 数的是 bucket='inbox'——归档完看板照样显示 41 条。\n\n四、修完之后的数字\n\n加了四档收敛规则（重复折叠、过期情报 1 天、通用老化 3 天、容量上限 60 条），每个动作都写事件、只归档不删除。\n\n真实库实跑：\n\n第一轮：41 → 21    （20 条 fyi 读档）\n第二轮：21 →  1    （3 条读档 + 17 条低优先级归档）\n今日花费：¥0.0000\n\n一分钱没花。清库存没走模型——因为该走模型的都不是库存。\n\n最终：待办只剩个位数、已完成 65、已归档 21。\n\n五、三个可以带走的判断\n\n一、主动性系统的失败模式，是\"安静\"。\n\n它不会崩，不会报错，只是慢慢不出活。所以监控的不是正确率，是吞吐：这一轮进来了多少、出去多少。只进不出就是故障，哪怕每一步都\"成功\"。\n\n二、并发不报错，只变慢。而\"变慢\"会把你指向错误的方向。\n\n我花了半小时查连接和路由，真正的问题在一个没 await 的 setInterval 里。\n\n三、用一个小模型省钱，前提是它的能力边界真的覆盖你的任务。\n\n同一个模型在 sst2 上 85%，在我这里的分布近似均匀。换个题型就是换了个模型。要接就得先测，测的方法还得和真实用例同分布——否则你得到的是一个永远不触发的闸门。\n\n---\n\n现在这套东西是 DSH 的一个插件，装完左侧栏多一个蜂巢图标，不需要另配 API key（借宿主已配的模型），可选执行器（Pi / Codex / Claude Code / Grok Bot）全都可以不装。\n\n代码在 GitHub：github.com/Elohia/dsh-plugin-hive ，MIT。\n\n我不觉得这算\"让 AI 更聪明\"。\n\n它改变的是：我以前要自己知道今天该干什么，现在不用了；代价是我得能看出它什么时候在假装干活。";
+  const $ = (s) => document.querySelector(s);
+  async function copy() {
+    const btn = $('#copy');
+    try {
+      await navigator.clipboard.writeText(PLAIN);
+    } catch {
+      // 剪贴板 API 不可用（file:// 或旧浏览器）→ 退回到 textarea 选中复制
+      const ta = document.createElement('textarea');
+      ta.value = PLAIN; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); } catch {}
+      ta.remove();
+    }
+    const old = btn.textContent;
+    btn.textContent = '✓ 已复制'; btn.classList.add('done');
+    const toast = $('#toast');
+    toast.classList.add('show');
+    setTimeout(() => { btn.textContent = old; btn.classList.remove('done'); toast.classList.remove('show'); }, 1900);
+  }
+  $('#copy').addEventListener('click', copy);
+  $('#print').addEventListener('click', () => window.print());
+  document.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'c' && !window.getSelection()?.toString()) copy();
+  });
+</script>
+</body>
+</html>

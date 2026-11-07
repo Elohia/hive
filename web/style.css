@@ -829,3 +829,21 @@ select.input option { background: #0c141c; color: var(--text); }
   .kpi-value { font-size: 16.5px; }
   .hbar { grid-template-columns: 58px 1fr auto; }
 }
+
+/* ── 全文展开（看板里长正文/长错误不再只能看两行）────────────────── */
+.fulltext { margin: 5px 0 0; }
+.fulltext > summary {
+  cursor: pointer; font-size: 11.5px; color: var(--text); opacity: .78;
+  letter-spacing: .04em; user-select: none; list-style: none; padding: 2px 0;
+}
+.fulltext > summary::-webkit-details-marker { display: none; }
+.fulltext > summary::before { content: '▸ '; opacity: .6; }
+.fulltext[open] > summary::before { content: '▾ '; }
+.fulltext > summary:hover { opacity: 1; text-decoration: underline; }
+.fulltext-body {
+  margin: 6px 0 0; padding: 10px 12px; max-height: 320px; overflow: auto;
+  background: rgba(255,255,255,.035); border: 1px solid var(--line); border-radius: 8px;
+  font-family: inherit; font-size: 12.5px; line-height: 1.72; color: var(--text);
+  white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 2;
+}
+.fulltext-single { -webkit-line-clamp: unset !important; display: block !important; overflow: visible !important; }

@@ -124,7 +124,8 @@
         "exec",
         "--skip-git-repo-check"
       ],
-      "cwdMode": "task"
+      "cwdMode": "task",
+      "note": "已改指向 Xiaomi Token Plan CN（https://token-plan-cn.xiaomimimo.com） 的 OpenAI 兼容端点（~/.codex/config.toml: base_url=https://token-plan-cn.xiaomimimo.com/v1, wire_api=responses, model=mimo-v2.6-pro）。实测 codex exec 通过。"
     },
     "claude": {
       "enabled": true,
@@ -133,7 +134,8 @@
       "args": [
         "-p"
       ],
-      "cwdMode": "task"
+      "cwdMode": "task",
+      "note": "已改指向 Xiaomi Token Plan CN（https://token-plan-cn.xiaomimimo.com） 的 Anthropic 兼容端点（~/.claude/settings.json: ANTHROPIC_BASE_URL=https://token-plan-cn.xiaomimimo.com/anthropic, model=mimo-v2.6-pro）。实测 claude -p 通过。"
     },
     "shell": {
       "enabled": true,
@@ -144,6 +146,24 @@
         "-Command"
       ],
       "cwdMode": "task"
+    },
+    "proc": {
+      "enabled": true,
+      "kind": "process",
+      "command": "pwsh",
+      "args": [
+        "-NoProfile",
+        "-Command"
+      ],
+      "note": "通用命令执行器：任务体里给出 command 就用它跑。自然语言任务不会被路由到这里（TASK_EXECUTORS 白名单），需要显式命令时用。"
+    },
+    "grok": {
+      "enabled": true,
+      "kind": "http",
+      "bridgeUrl": "http://127.0.0.1:8799",
+      "chat": "",
+      "timeoutMs": 180000,
+      "note": "Grok Bot 执行器：经本地消息桥派单给它的人格会话（趋势分析师/数据分析师/A股调用…）。chat 留空=用桥当前会话；它会真的在桌面会话里打字，属于对外副作用，只用于研究/分析/起草。"
     }
   },
   "settings": {
@@ -172,7 +192,15 @@
       "L4": 1,
       "L5": 1
     },
-    "pulseTimeoutSec": 240
+    "pulseTimeoutSec": 240,
+    "quietAction": "archive",
+    "reap": {
+      "enabled": true,
+      "inboxTtlDays": 3,
+      "inboxMax": 60,
+      "foldDuplicates": true,
+      "staleInfoDays": 1
+    }
   },
   "notify": {
     "toast": {
@@ -226,7 +254,8 @@
         ".txt",
         ".html",
         ".json"
-      ]
+      ],
+      "snippetChars": 2000
     },
     "calendar": {
       "enabled": true,

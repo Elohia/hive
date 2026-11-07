@@ -386,6 +386,12 @@ async function cmdDaemon() {
       const a = await watchdog.tick();
       return `${a.length} 动作`;
     },
+    async reap() {
+      const { reap } = await import('../src/task/reap.mjs');
+      const r = reap({ cfg: loadConfig() });
+      if (!r.before) return '收件箱为空';
+      return `${r.before} → ${r.after}（老化 ${r.aged} / 超容 ${r.overflow} / 折叠 ${r.folded}）`;
+    },
     async digest(pulse) {
       const { dailyBrief } = await import('../src/context/profile.mjs');
       const { chat } = await import('../src/core/llm.mjs');

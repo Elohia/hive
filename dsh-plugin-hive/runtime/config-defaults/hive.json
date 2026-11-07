@@ -94,40 +94,25 @@
       "args": [
         "--profile",
         "headless"
-      ],
-      "cwdMode": "task",
-      "coldStartSec": 55,
-      "note": "dsh --profile headless \"<job>\" prints final answer and exits"
+      ]
     },
     "pi": {
-      "enabled": true,
+      "enabled": false,
       "kind": "process",
       "command": "pi",
-      "args": [
-        "-p",
-        "--mode",
-        "json"
-      ],
-      "cwdMode": "task"
+      "note": "可选：装了 pi 后在看板「Agent 依赖」里开启"
     },
     "codex": {
-      "enabled": true,
+      "enabled": false,
       "kind": "process",
       "command": "codex",
-      "args": [
-        "exec",
-        "--skip-git-repo-check"
-      ],
-      "cwdMode": "task"
+      "note": "可选：装了 codex 后在看板「Agent 依赖」里开启"
     },
     "claude": {
-      "enabled": true,
+      "enabled": false,
       "kind": "process",
       "command": "claude",
-      "args": [
-        "-p"
-      ],
-      "cwdMode": "task"
+      "note": "可选：装了 Claude Code 后在看板「Agent 依赖」里开启"
     },
     "shell": {
       "enabled": true,
@@ -136,8 +121,20 @@
       "args": [
         "-NoProfile",
         "-Command"
-      ],
-      "cwdMode": "task"
+      ]
+    },
+    "grok": {
+      "enabled": false,
+      "kind": "http",
+      "bridgeUrl": "http://127.0.0.1:8799",
+      "chat": "",
+      "note": "可选：本机装了 Grok Bot（D:\\bot\\bridge.mjs 消息桥）才开；它会在桌面会话里真的打字"
+    },
+    "proc": {
+      "enabled": false,
+      "kind": "process",
+      "command": "",
+      "note": "通用命令执行器：需要显式 command 再开启；自然语言任务不会被路由到这里"
     }
   },
   "settings": {
@@ -166,7 +163,15 @@
       "L4": 1,
       "L5": 1
     },
-    "pulseTimeoutSec": 240
+    "pulseTimeoutSec": 240,
+    "quietAction": "archive",
+    "reap": {
+      "enabled": true,
+      "inboxTtlDays": 3,
+      "inboxMax": 60,
+      "foldDuplicates": true,
+      "staleInfoDays": 1
+    }
   },
   "notify": {
     "toast": {
@@ -208,7 +213,8 @@
         ".txt",
         ".html",
         ".json"
-      ]
+      ],
+      "snippetChars": 2000
     },
     "calendar": {
       "enabled": true,

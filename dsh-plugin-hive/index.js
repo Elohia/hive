@@ -65,35 +65,106 @@ function provision(home) {
   return created;
 }
 
-/** 探测宿主已配置的 provider/model */
-async function resolveModel(ctx) {
+/** 从 selection 对象里尽力抽出 provider/model（字段名在不同版本里不一致） */
+function pickSelection(sel) {
+  if (!sel || typeof sel !== 'object') return {};
+  const provider = sel.provider || sel.providerId || sel.provider_id
+    || (sel.route && (sel.route.provider || sel.route.id)) || sel.id;
+  const model = sel.model || sel.modelId || sel.model_id
+    || (sel.route && (sel.route.model || sel.route.modelId)) || sel.name;
+  return {
+    provider: typeof provider === 'string' && provider ? provider : undefined,
+    model: typeof model === 'string' && model ? model : undefined,
+  };
+}
+
+/** 用户手工钉住的模型（$DSH_HOME/hive/model-pin.json），优先于自动探测 */
+function readPin(home) {
   try {
-    const sel = ctx.agentDefaultModel?.currentSelection?.();
-    if (sel) {
-      const provider = sel.provider || sel.providerId || sel.id;
-      const model = sel.model || sel.modelId;
-      if (provider && model) return { provider, model };
-    }
-  } catch { /* 继续兜底 */ }
-  try {
-    const providers = ctx.llm.listProviders();
-    if (!providers?.length) return null;
-    // 优先 deepseek（官方账号最可能已配）
-    const p = providers.find((x) => /deepseek/i.test(x.id)) || providers[0];
-    const models = await ctx.llm.listModels(p.id);
-    if (!models?.length) return { provider: p.id, model: undefined };
-    const m = models.find((x) => /flash|chat|pro/i.test(x.id)) || models[0];
-    return { provider: p.id, model: m.id };
-  } catch {
-    return null;
+    const j = JSON.parse(fs.readFileSync(path.join(home, 'model-pin.json'), 'utf8'));
+    if (j && typeof j.provider === 'string' && typeof j.model === 'string' && j.provider && j.model) return j;
+  } catch { /* 没有就算了 */ }
+  return null;
+}
+
+/** 常见 provider 的保底模型：只在该 provider 确实存在、且探测全失败时才用 */
+const DEFAULT_MODEL_BY_PROVIDER = {
+  'deepseek-official': 'deepseek-flash',
+  'deepseek': 'deepseek-chat',
+  'google': 'gemini-3.6-flash',
+  'anthropic': 'claude-sonnet-4',
+  'openai': 'gpt-5.1',
+};
+
+/**
+ * 解析要用的 provider/model。
+ * 顺序：手工钉住 → 宿主当前选择 → 该 provider 的模型目录 → 内置保底表。
+ * 关键教训：插件在启动早期调用时，宿主的模型选择可能还没水合（model 为 undefined），
+ * 所以每一层都必须校验「非空字符串」，不能把 undefined 传下去。
+ */
+async function resolveModel(ctx, home) {
+  // 1) 手工钉住
+  const pin = readPin(home);
+  if (pin) return { provider: pin.provider, model: pin.model, from: 'pin' };
+
+  // 2) 宿主当前选择（字段名有多个变体）
+  let sel = {};
+  try { sel = pickSelection(ctx.agentDefaultModel?.currentSelection?.()); } catch { /* 忽略 */ }
+  if (sel.provider && sel.model) return { ...sel, from: 'selection' };
+
+  // 3) provider 候选：选择里给的 > deepseek 系 > 第一个
+  let providers = [];
+  try { providers = ctx.llm.listProviders() || []; } catch { /* 忽略 */ }
+  const providerIds = providers.map((p) => p && p.id).filter(Boolean);
+  const provider = sel.provider
+    || providerIds.find((id) => /deepseek/i.test(id))
+    || providerIds[0];
+
+  // 4) 该 provider 的模型目录
+  if (provider) {
+    try {
+      const models = await ctx.llm.listModels(provider);
+      const ids = (models || []).map((m) => (typeof m === 'string' ? m : m && (m.id || m.model))).filter(Boolean);
+      if (ids.length) {
+        const preferred = ids.find((id) => /flash|chat|pro/i.test(id)) || ids[0];
+        return { provider, model: sel.model || preferred, from: 'catalog' };
+      }
+    } catch { /* 忽略 */ }
   }
+
+  // 5) 内置保底
+  const fallbackProvider = provider || Object.keys(DEFAULT_MODEL_BY_PROVIDER)[0];
+  const fallbackModel = DEFAULT_MODEL_BY_PROVIDER[fallbackProvider];
+  if (fallbackModel) return { provider: fallbackProvider, model: fallbackModel, from: 'fallback' };
+
+  return null;
+}
+
+/** 诊断：把宿主这边能看到的 provider/model 全量吐出来（排障用） */
+async function inspectModels(ctx, home) {
+  const out = { at: new Date().toISOString(), pin: readPin(home), providers: [], selection: null, models: {}, resolved: null };
+  try { out.selection = ctx.agentDefaultModel?.currentSelection?.() ?? null; } catch (e) { out.selectionError = String(e.message); }
+  try { out.selectionPicked = pickSelection(out.selection); } catch { /* 忽略 */ }
+  try { out.providers = (ctx.llm.listProviders() || []).map((p) => ({ id: p?.id, name: p?.name })); } catch (e) { out.providersError = String(e.message); }
+  for (const p of out.providers) {
+    try {
+      const ms = await ctx.llm.listModels(p.id);
+      out.models[p.id] = (ms || []).map((m) => (typeof m === 'string' ? m : { id: m?.id, name: m?.name }));
+    } catch (e) { out.models[p.id] = { error: String(e.message) }; }
+  }
+  try { out.resolved = await resolveModel(ctx, home); } catch (e) { out.resolvedError = String(e.message); }
+  return out;
 }
 
 /** 用宿主 ctx.llm 实现 HIVE 的 chat 传输层 */
-function makeTransport(ctx, state) {
+function makeTransport(ctx, state, home) {
   return async function transport({ messages, maxTokens, temperature, timeoutMs }) {
-    const sel = await resolveModel(ctx);
-    if (!sel?.provider) throw new Error('宿主未配置任何可用模型，请先在 DSH 设置里选一个模型');
+    const sel = await resolveModel(ctx, home);
+    if (!sel?.provider || !sel?.model) {
+      state.modelReady = false;
+      state.modelError = '解析不到可用的 模型（provider/model 都为空）';
+      throw new Error('宿主没有可用的模型：请先在 DSH 设置里选一个模型，或在 $DSH_HOME/hive/model-pin.json 里钉住 {provider, model}');
+    }
     const t0 = Date.now();
     const system = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n\n');
     const rest = messages
@@ -128,6 +199,9 @@ function makeTransport(ctx, state) {
       clearTimeout(timer);
     }
     state.lastModel = `${sel.provider}/${sel.model}`;
+    state.modelReady = true;
+    state.modelError = null;
+    state.modelFrom = sel.from || null;
     return {
       ok: true, text, provider: sel.provider, model: sel.model, tier: 'host',
       usage, costCny: 0, ms: Date.now() - t0, viaHost: true, finish,
@@ -221,7 +295,7 @@ export function apply(ctx, config = {}) {
 
       // 2) 注入模型传输层（关键：借宿主的模型，新用户零配置可用）
       const llmMod = await import('./runtime/src/core/llm.mjs');
-      llmMod.setTransport(makeTransport(ctx, state));
+      llmMod.setTransport(makeTransport(ctx, state, home));
       state.phase = 'ready';
       try {
         const probe = await llmMod.chat({ messages: [{ role: 'user', content: '回复 OK' }], maxTokens: 8, timeoutMs: 30000 });
@@ -300,7 +374,7 @@ async function handlePluginApi(req, res, raw, state) {
         ok: true, mode: 'plugin', phase: state.phase,
         home: state.home, dbPath: state.dbPath,
         engine: state.engine?.status?.() ?? null,
-        model: { ready: state.modelReady, current: state.lastModel, error: state.modelError },
+        model: { ready: state.modelReady, current: state.lastModel, from: state.modelFrom, error: state.modelError },
         created: state.created, startedAt: state.startedAt,
       });
     }
@@ -310,6 +384,41 @@ async function handlePluginApi(req, res, raw, state) {
     if (method === 'GET' && p === '/events') {
       return sendJson(res, 200, { ok: true, events: state.events?.() ?? [] });
     }
+
+    // ── 模型诊断：把宿主这边能看到的 provider/model 全量吐出来 ──
+    if (method === 'GET' && p === '/models') {
+      const info = await inspectModels(ctx, state.home);
+      return sendJson(res, 200, {
+        ok: true, ...info,
+        live: { ready: state.modelReady, current: state.lastModel, from: state.modelFrom, error: state.modelError },
+      });
+    }
+    // ── 手工钉住模型（写 $DSH_HOME/hive/model-pin.json，下一次调用即生效并当场验证）──
+    if (method === 'POST' && p === '/model') {
+      const body = await readBody(req);
+      const provider = String(body.provider || '').trim();
+      const model = String(body.model || '').trim();
+      if (!provider || !model) return sendJson(res, 400, { error: '需要 {provider, model} 两个非空字符串' });
+      try {
+        fs.mkdirSync(state.home, { recursive: true });
+        fs.writeFileSync(path.join(state.home, 'model-pin.json'),
+          JSON.stringify({ provider, model, at: new Date().toISOString() }, null, 2), 'utf8');
+        let probe = null;
+        try {
+          const { chat } = await import('./runtime/src/core/llm.mjs');
+          const r = await chat({ messages: [{ role: 'user', content: '回复 OK' }], maxTokens: 8, timeoutMs: 30000 });
+          probe = { ok: !!r.ok, error: r.ok ? null : String(r.error || '').slice(0, 200) };
+        } catch (e) { probe = { ok: false, error: String(e.message).slice(0, 200) }; }
+        return sendJson(res, 200, { ok: true, pinned: { provider, model }, probe });
+      } catch (e) {
+        return sendJson(res, 500, { error: String(e?.message || e) });
+      }
+    }
+    if (method === 'DELETE' && p === '/model') {
+      try { fs.unlinkSync(path.join(state.home, 'model-pin.json')); } catch { /* 没有就算了 */ }
+      return sendJson(res, 200, { ok: true, cleared: true });
+    }
+
     if (method === 'POST' && (p === '/start' || p === '/stop' || p === '/restart')) {
       if (p === '/start') await state.engine.start();
       else if (p === '/stop') await state.engine.stop();

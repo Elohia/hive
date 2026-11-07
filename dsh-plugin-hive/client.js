@@ -56,6 +56,21 @@ window.__ModuleLoader__.load({
     const DASHBOARD = '/hive/' // 看板页面（iframe 内嵌，宿主已允许同源 frame）
     const BAR_H = 48 // 控制条高度，与 iframe 的 calc(100% - 48px) 严格对应
     const POLL_MS = 20000 // 状态轮询间隔
+
+// 跨挂载状态缓存：DSH 的 main 面板是按 id 挂载的，切到会话再切回来会**卸载重建**。
+// 如果状态只存在组件里，回来就是 loading → 首轮请求稍慢或失败一次就显示红点，
+// 看起来跟「掉线」一样。这里把最近一次成功读数留在模块作用域，重建时立刻还原。
+const LAST = { phase: 'loading', reason: '', detail: '', counts: null, engineRun: null, at: 0 }
+
+// 单次请求失败后先重试一次再判死：切面板时偶发一次 abort/超时不该变成红色状态
+async function requestRetry(path, opts) {
+  try {
+    return await request(path, opts)
+  } catch (e) {
+    await new Promise((r) => setTimeout(r, 700))
+    return request(path, opts)
+  }
+}
     const TOAST_MS = 6000 // 提示条自动消失时间（失败留 9s）
     const STOP_ARM_MS = 6000 // 「停止」二次确认的窗口
 
@@ -1109,11 +1124,11 @@ window.__ModuleLoader__.load({
               : t('levelUnknown')
 
       return function HivePanel() {
-        /* ── 状态 ── */
-        const [phase, setPhase] = React.useState('loading')
-        const [reason, setReason] = React.useState('')
-        const [detail, setDetail] = React.useState('') // 弹窗里的补充：engine / model
-        const [counts, setCounts] = React.useState(null)
+        /* ── 状态：初始值取上次挂载的读数，切面板回来不闪 loading ── */
+        const [phase, setPhase] = React.useState(LAST.phase)
+        const [reason, setReason] = React.useState(LAST.reason)
+        const [detail, setDetail] = React.useState(LAST.detail) // 弹窗里的补充：engine / model
+        const [counts, setCounts] = React.useState(LAST.counts)
         const [busy, setBusy] = React.useState('') // 正在跑的按钮 tag
         const [toast, setToast] = React.useState(null) // { tone, text }
 
@@ -1177,14 +1192,26 @@ window.__ModuleLoader__.load({
 
         /* ── 读状态 ── */
         const refresh = async (opts = {}) => {
-          const pluginRes = await request('/plugin/status')
+          // 失败先重试一次：切面板/系统繁忙时的偶发失败不该直接把状态点打成红色
+          let pluginRes
+          try {
+            pluginRes = await requestRetry('/plugin/status')
+          } catch (e) {
+            pluginRes = { ok: false, status: 0, data: null, error: short(e) }
+          }
           if (!alive.current) return
-          const healthRes = pluginRes.ok ? await request('/health') : { ok: false, status: 0, data: null, error: '' }
+          let healthRes = { ok: false, status: 0, data: null, error: '' }
+          if (pluginRes.ok) {
+            try { healthRes = await requestRetry('/health') } catch { /* 保持空 */ }
+          }
           if (!alive.current) return
 
           const read = readPhase(pluginRes, healthRes)
           setPhase(read.phase)
           setReason(read.reason)
+          LAST.phase = read.phase
+          LAST.reason = read.reason
+          LAST.at = Date.now()
 
           const eng = read.plugin && read.plugin.engine && typeof read.plugin.engine === 'object' ? read.plugin.engine : null
           const mod = read.plugin && read.plugin.model && typeof read.plugin.model === 'object' ? read.plugin.model : null
@@ -1195,11 +1222,14 @@ window.__ModuleLoader__.load({
           }
           if (mod) bits.push('LLM：' + (mod.ready ? '就绪' : '未就绪') + (mod.current ? '（' + str(mod.current) + '）' : ''))
           setDetail(bits.join(' · '))
+          LAST.detail = bits.join(' · ')
 
           // 引擎没跑时，可能还在引导阶段；顺便把 overview 拉一下（拿不到也不报错）
-          const ov = read.phase === 'ready' || read.phase === 'degraded' ? await request('/overview') : { ok: false }
+          const ov = read.phase === 'ready' || read.phase === 'degraded' ? await request('/overview').catch(() => ({ ok: false })) : { ok: false }
           if (!alive.current) return
-          setCounts(ov.ok ? pickCounts(ov.data) : null)
+          const nextCounts = ov.ok ? pickCounts(ov.data) : null
+          setCounts(nextCounts)
+          if (nextCounts) LAST.counts = nextCounts
 
           if (read.phase === 'error' && !opts.silent) say('bad', t('healthFailed') + '：' + read.reason)
         }

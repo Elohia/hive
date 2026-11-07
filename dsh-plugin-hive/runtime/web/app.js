@@ -17,6 +17,20 @@ const truncate = (s, n = 80) => {
 };
 const cssEscape = (s) => (window.CSS && CSS.escape ? CSS.escape(String(s)) : String(s).replace(/["\\]/g, '\\$&'));
 
+/**
+ * 全文块：列表里只显示预览（两行），但**内容一个字都不丢**——
+ * 长文本或含换行的，下面挂一个 <details>，点开就是完整原文（pre-wrap，可滚动）。
+ * 用 <details> 而不是 JS 状态：看板每 20s 重渲染，JS 展开态会被冲掉，<details> 不会。
+ */
+const fullTextBlock = (text, { cls = 'body-preview', previewLen = 600 } = {}) => {
+  const str = String(text ?? '');
+  if (!str.trim()) return '';
+  const isLong = str.length > previewLen || /\n/.test(str.trim());
+  if (!isLong) return `<p class="${cls} fulltext-single">${esc(str)}</p>`;
+  return `<p class="${cls}">${esc(truncate(str, previewLen))}</p>
+    <details class="fulltext"><summary>展开全文 · ${str.length.toLocaleString()} 字</summary><pre class="fulltext-body">${esc(str)}</pre></details>`;
+};
+
 const URL_TOKEN = new URLSearchParams(location.search).get('token') || '';
 // 截图 / 调试用：?nosse=1 关闭 SSE 长连接（headless 截图带虚拟时间时会卡在长连接上）
 // ?doctor=1 打开即弹环境自检抽屉（便于截图/排障）
@@ -284,6 +298,12 @@ function approvalsMiniHtml(list) {
 function itemDetailHtml(d) {
   if (!d) return '';
   const parts = [];
+  if (d.item && d.item.body) {
+    parts.push(section('原文（完整）', `<pre class="fulltext-body" style="max-height:420px">${esc(d.item.body)}</pre>`));
+  }
+  if (d.item && d.item.level_reason) {
+    parts.push(section('判定依据', `<pre class="mini">${esc(d.item.level_reason)}</pre>`));
+  }
   parts.push(section('事件时间线', timelineHtml(d.events)));
   if (d.tasks && d.tasks.length) parts.push(section('任务', tasksMiniHtml(d.tasks)));
   if (d.approvals && d.approvals.length) parts.push(section('审批', approvalsMiniHtml(d.approvals)));
@@ -307,6 +327,8 @@ function taskDetailHtml(d) {
   if (!d) return '';
   const t = d.task;
   const parts = [];
+  if (t.goal) parts.push(section('目标（完整）', `<pre class="fulltext-body" style="max-height:360px">${esc(t.goal)}</pre>`));
+  if (t.prompt) parts.push(section('提示词（完整）', `<pre class="fulltext-body" style="max-height:360px">${esc(t.prompt)}</pre>`));
   if (t.last_error) parts.push(section('错误', `<pre class="mini" style="color:#ffb3bb">${esc(t.last_error)}</pre>`));
   if (t.plan) parts.push(section('计划 plan', typeof t.plan === 'string' ? `<pre class="mini">${esc(t.plan)}</pre>` : `<pre class="mini">${esc(JSON.stringify(t.plan, null, 2))}</pre>`));
   if (t.result) parts.push(section('结果 result', typeof t.result === 'string' ? `<pre class="mini">${esc(t.result)}</pre>` : `<pre class="mini">${esc(JSON.stringify(t.result, null, 2))}</pre>`));
@@ -448,8 +470,8 @@ function itemCard(it) {
           ${it.due_at ? chip('muted', '截止 ' + fmt.time(it.due_at)) : ''}
           ${chip('muted', fmt.ago(it.created_at))}
         </div>
-        ${it.body ? `<p class="body-preview">${esc(truncate(it.body, 600))}</p>` : ''}
-        ${it.level_reason ? `<div class="chips">${chip('muted', '判定：' + truncate(it.level_reason, 80))}</div>` : ''}
+        ${fullTextBlock(it.body)}
+        ${it.level_reason ? `<div class="chips">${chip('muted', '判定：' + truncate(it.level_reason, 80), it.level_reason)}</div>` : ''}
       </div>
       <button class="icon-btn" data-act="toggle" title="展开事件时间线与产物" aria-label="展开">${open ? '▴' : '▾'}</button>
     </div>
@@ -658,8 +680,8 @@ function taskCard(t) {
           ${t.item_title ? chip('muted', '事项：' + truncate(t.item_title, 32)) : ''}
           ${chip('muted', fmt.ago(t.created_at))}
         </div>
-        ${t.last_error ? `<p class="body-preview" style="color:#ffb3bb">${esc(truncate(t.last_error, 320))}</p>` : ''}
-        ${!t.last_error && t.goal ? `<p class="body-preview">${esc(truncate(t.goal, 320))}</p>` : ''}
+        ${t.last_error ? fullTextBlock(t.last_error, { cls: 'body-preview', previewLen: 320 }).replace('class="body-preview', 'style="color:#ffb3bb" class="body-preview') : ''}
+        ${!t.last_error && t.goal ? fullTextBlock(t.goal, { previewLen: 320 }) : ''}
       </div>
       <button class="icon-btn" data-act="toggle" title="展开运行记录与产物">${open ? '▴' : '▾'}</button>
     </div>

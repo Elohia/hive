@@ -20,3 +20,5 @@ Thumbs.db
 desktop.ini
 *.bak
 *.bak-*
+# 长文产物：源在此，html 由脚本生成，预览图不提交（可随时重生成）
+docs/x-longform-*-preview.png

@@ -28,8 +28,9 @@ async function loadExecutors() {
   try { return await import('../executors/index.mjs'); } catch { return null; }
 }
 
-/** 只有这些执行器能接「自然语言目标」；shell/proc 只能接显式命令，绝不派 NL 任务 */
-const TASK_EXECUTORS = ['llm', 'dsh', 'pi', 'codex', 'claude'];
+/** 只有这些执行器能接「自然语言目标」；shell/proc 只能接显式命令，绝不派 NL 任务
+ *  grok：Grok Bot 的人格会话（有记忆、无工具），用于研究/分析/起草 */
+const TASK_EXECUTORS = ['llm', 'dsh', 'pi', 'codex', 'claude', 'grok'];
 
 async function availableExecutors() {
   const ex = await loadExecutors();
@@ -165,14 +166,18 @@ export async function processItem(itemOrId, { force = false, skipApproval = fals
 
   emit({ actor: 'router', type: 'route.start', item_id: item.id, message: `L${t.level} action=${t.primaryAction}` });
 
-  // 守中：fyi（纯情报）不派活、不花 token，只留在 Inbox 当背景信息。
-  // 除非显式 force（人工点了「派单执行」）。
+  // 守中：fyi（纯情报）不派活、不花 token。
+  // ⚠ 但不能「永远留在 Inbox」——传感器产出的报告 90% 是 fyi，那样待办只增不减，
+  //    几天就几百条把面板压垮（实测 41 条里 21 条是这种情况）。所以改成**读档**：
+  //    移出待办桶（bucket=active + status=done），内容仍在库里，可用「已完成/情报」筛回来。
+  //    人工点「派单执行」时 force=true，仍会真去处理。
   if (item.kind === 'fyi' && !force) {
     updateItem(item.id, {
+      status: 'done', bucket: 'active',
       autonomy_level: t.level, confidence: t.confidence, level_reason: t.reason,
-      meta: { ...(item.meta ? JSON.parse(item.meta) : {}), actions: t.actions, primaryAction: t.primaryAction, routed: 'info-only' },
-    }, { event: { type: 'item.info_only', actor: 'router', message: 'fyi 仅作背景信息，不派活' } });
-    return { route: 'skip', ok: true, detail: 'fyi 仅留档', triage: t };
+      meta: { ...(item.meta ? JSON.parse(item.meta) : {}), actions: t.actions, primaryAction: t.primaryAction, routed: 'info-only', infoOnly: true },
+    }, { event: { type: 'item.info_only', actor: 'router', message: `fyi 读档（L${t.level}，不派活）→ 移出待办` } });
+    return { route: 'info-done', ok: true, detail: 'fyi 读档', triage: t };
   }
 
   // 红线拦截：目标里点到 never_touch 区域 → 不派发，直接请示人
@@ -260,16 +265,44 @@ export async function processItem(itemOrId, { force = false, skipApproval = fals
 export async function triageInbox({ limit = 20 } = {}) {
   const cfg = loadConfig();
   const threshold = cfg.settings.quietThreshold ?? 6;
-  const items = listItems({ bucket: 'inbox', limit: 60 });
+  // 低于阈值的项怎么处置：'archive'（默认，收敛，不再反复遍历）| 'keep'（留在 inbox）
+  const quietAction = cfg.settings.quietAction ?? 'archive';
+
+  // ⚠ 顺序很关键：先补「从未判定」的（autonomy_level IS NULL），再按优先级处理其余的。
+  //   否则 listItems 按 priority DESC 取 60 条，永远是同一批高优先级项占满名额，
+  //   低优先级/未判定的会**永久卡在 L0**——这就是之前 12 条 L0 + 45 条堆积的直接原因。
+  const undecided = q.all(
+    `SELECT * FROM items WHERE bucket='inbox' AND status='inbox' AND autonomy_level IS NULL
+     ORDER BY priority DESC, COALESCE(updated_at, created_at) DESC LIMIT ?`,
+    Math.max(limit, 40),
+  );
+  const rest = listItems({ bucket: 'inbox', limit: 60 }).filter((it) => !undecided.some((u) => u.id === it.id));
+  const items = [...undecided, ...rest];
+
   const out = [];
   for (const it of items) {
     if (out.length >= limit) break;
-    // 守中：噪声项（退信/订阅）与低优先级项只静默留档，不花 token 判定
     const meta = it.meta ? (() => { try { return JSON.parse(it.meta); } catch { return {}; } })() : {};
+
+    // 守中：噪声项（退信/订阅）与低优先级项不花 token 判定
     if (meta.noisy || (it.priority ?? 0) < threshold) {
-      out.push({ id: it.id, title: it.title, route: 'quiet', level: it.autonomy_level, priority: it.priority });
+      const why = meta.noisy ? '噪声（退信/订阅/推广）' : `优先级 ${it.priority} < 阈值 ${threshold}`;
+      if (quietAction === 'archive') {
+        // 关键修复：判为安静就**落状态**，否则下一轮又会被当成待处理重新遍历 → 无限堆积
+        try {
+          updateItem(it.id, { status: 'archived', bucket: 'archived', autonomy_level: it.autonomy_level ?? 1 }, {
+            event: { type: 'item.quiet_archived', actor: 'router', message: `${why}，自动归档` },
+          });
+          out.push({ id: it.id, title: it.title, route: 'quiet-archived', priority: it.priority });
+        } catch (e) {
+          out.push({ id: it.id, route: 'quiet', error: String(e?.message || e) });
+        }
+      } else {
+        out.push({ id: it.id, title: it.title, route: 'quiet', level: it.autonomy_level, priority: it.priority });
+      }
       continue;
     }
+
     try {
       const r = await processItem(it);
       out.push({ id: it.id, title: it.title, route: r.route, level: r.triage?.level ?? it.autonomy_level });

@@ -153,6 +153,11 @@ function pickFn(mod, names) {
 
 // ───────────────────────────── 形状转换 ─────────────────────────────
 
+/** 只读计数：表/字段异常时返回 0，绝不让看板因为一个 KPI 挂掉 */
+function safeCount(sql) {
+  try { return q.get(sql)?.n ?? 0; } catch { return 0; }
+}
+
 function shapeItem(it) {
   if (!it) return null;
   return { ...it, meta: parseJsonMaybe(it.meta, null) };
@@ -212,11 +217,12 @@ function normalizeProbes(raw) {
     if (v && typeof v === 'object') {
       out[name] = {
         ok: !!v.ok,
+        disabled: v.disabled === true,
         reason: v.reason ?? null,
         version: v.version ?? null,
       };
     } else {
-      out[name] = { ok: !!v, reason: null, version: null };
+      out[name] = { ok: !!v, disabled: false, reason: null, version: null };
     }
   }
   return out;
@@ -476,6 +482,7 @@ function overview(ctx) {
       queued: p.queued,
       running: p.running,
       failed24h: p.failed24h,
+      archived: safeCount("SELECT COUNT(*) n FROM items WHERE status='archived'"),
       itemsTotal: db.items,
       tasksTotal: db.tasks,
       approvalsTotal: db.approvals,
@@ -507,8 +514,19 @@ function items(ctx) {
     items: rows.map(shapeItem),
     count: rows.length,
     filters: { bucket: bucket ?? null, status: status ?? null, source: source ?? null, q: search ?? null, limit, offset },
-    counts: { inbox: p.inbox, outbox: p.outbox, queued: p.queued, running: p.running },
+    counts: { inbox: p.inbox, outbox: p.outbox, queued: p.queued, running: p.running, archived: safeCount("SELECT COUNT(*) n FROM items WHERE status='archived'") },
   };
+}
+
+async function reapRun(ctx) {
+  const dryRun = String(ctx.query?.dry ?? '') === '1' || String(ctx.query?.dry ?? '') === 'true';
+  try {
+    const { reap } = await import('../task/reap.mjs');
+    const r = reap({ dryRun });
+    return { ok: true, ...r };
+  } catch (e) {
+    return { ok: false, error: String(e?.message || e), dryRun };
+  }
 }
 
 function itemDetail(ctx) {
@@ -1080,6 +1098,7 @@ async function agents(ctx) {
       name,
       kind: p.kind ?? cfg.executors?.[name]?.kind ?? null,
       enabled: p.enabled ?? (cfg.executors?.[name]?.enabled !== false),
+      disabled: p.disabled === true,
       ok: !!p.ok,
       version: p.version ?? null,
       reason: p.ok ? null : (p.reason ?? (probes[name] ? null : 'probe 未返回该执行器')),
@@ -1113,7 +1132,8 @@ async function agents(ctx) {
     runtimes,
     summary: {
       executors: executors.length,
-      available: executors.filter((e) => e.ok).length,
+      available: executors.filter((e) => e.ok && !e.disabled).length,
+      disabled: executors.filter((e) => e.disabled).length,
       enabled: executors.filter((e) => e.enabled).length,
       runs24h: sum((e) => e.runs24h.total),
       ok24h: sum((e) => e.runs24h.ok),
@@ -1704,6 +1724,7 @@ const ROUTES = [
   { method: 'POST', name: 'autopilots.toggle', pattern: /^\/api\/autopilots\/([^/]+)\/toggle\/?$/, handler: autopilotToggle },
   { method: 'POST', name: 'autopilots.run', pattern: /^\/api\/autopilots\/([^/]+)\/run\/?$/, handler: autopilotRun },
   { method: 'GET', name: 'cost', pattern: /^\/api\/cost\/?$/, handler: costReport },
+  { method: 'POST', name: 'reap', pattern: /^\/api\/reap\/?$/, handler: reapRun },
   { method: 'GET', name: 'setup.doctor', pattern: /^\/api\/setup\/doctor\/?$/, handler: setupDoctor },
   { method: 'POST', name: 'setup.install', pattern: /^\/api\/setup\/install\/?$/, handler: setupInstall },
 

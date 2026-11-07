@@ -59,6 +59,8 @@ export function seedPulses() {
   }
   // 2) 判定/派发/看门狗/摘要
   want.push({ id: 'pulse-triage', name: '事项判定与路由', spec: 'every:10m', config: { handler: 'triage' } });
+  // 收敛：只进不出的收件箱会越攒越多，每 30 分钟收一次（老化/超容/重复折叠）
+  want.push({ id: 'pulse-reap', name: '收件箱收敛', spec: 'every:30m', config: { handler: 'reap' } });
   want.push({ id: 'pulse-watchdog', name: '看门狗', spec: 'every:1m', config: { handler: 'watchdog' } });
   want.push({ id: 'pulse-digest-morning', name: '晨报', spec: 'daily:08:40', config: { handler: 'digest', slot: 'morning' } });
   want.push({ id: 'pulse-digest-evening', name: '晚报', spec: 'daily:21:30', config: { handler: 'digest', slot: 'evening' } });

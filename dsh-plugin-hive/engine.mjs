@@ -46,6 +46,10 @@ export function createEngine({ log = () => {}, onEvent = () => {} } = {}) {
   let lastError = null;
   let startedAt = null;
   let ticks = 0;
+  // 关键：tick 必须互斥。之前用 setInterval 每 3s 起一次 tick 却不等待它结束，
+  // 而一轮 triage 要调用多次模型、耗时以分钟计 → 十几轮并发抢同一个 LLM 服务
+  // （正是用户会话在用的那个），表现为「切会话时 HIVE 像掉线、对话也变卡」。
+  let ticking = false;
 
   const emit = (type, message, data, level = 'info') => {
     try { taskcenter; } catch { /* noop */ }
@@ -94,8 +98,17 @@ export function createEngine({ log = () => {}, onEvent = () => {} } = {}) {
   }
 
   async function doTriage() {
-    const r = await router.triageInbox({ limit: 15 });
+    // 插件模式一次只判 5 条：走的是宿主的模型链路，15 条会超过 240s 脉冲超时（实测踩过）
+    const r = await router.triageInbox({ limit: 5 });
     emit('triage', `判定 ${r.length} 项`);
+    return r;
+  }
+
+  async function doReap() {
+    const { reap } = await import('./runtime/src/task/reap.mjs');
+    const r = reap({ cfg: loadConfig() });
+    const total = r.aged + r.overflow + r.folded;
+    if (total) emit('reap', `收敛 ${total} 条：${r.before} → ${r.after}（老化 ${r.aged} / 超容 ${r.overflow} / 折叠 ${r.folded}）`);
     return r;
   }
 
@@ -145,6 +158,7 @@ export function createEngine({ log = () => {}, onEvent = () => {} } = {}) {
     scan: (p) => doScan(p.config?.source),
     triage: () => doTriage(),
     watchdog: () => doWatchdog(),
+  reap: () => doReap(),
     digest: (p) => doDigest(p.config?.slot || 'morning'),
     context: () => doContext(),
     selfcheck: () => doSelfcheck(),
@@ -170,7 +184,8 @@ export function createEngine({ log = () => {}, onEvent = () => {} } = {}) {
   }
 
   async function tick() {
-    if (!running) return;
+    if (!running || ticking) return;   // 互斥：上一拍没跑完就跳过本拍，绝不并发
+    ticking = true;
     ticks++;
     const now = Date.now();
     try {
@@ -193,6 +208,7 @@ export function createEngine({ log = () => {}, onEvent = () => {} } = {}) {
             .finally(() => { draining = false; });
         }
       }
+      lastError = null;
       if (now - lastBeat >= 5 * 60e3) {
         lastBeat = now;
         emit('heartbeat', `alive · 第 ${ticks} 拍`);
@@ -201,6 +217,8 @@ export function createEngine({ log = () => {}, onEvent = () => {} } = {}) {
       lastError = `tick: ${e.message}`;
       log('error', lastError);
       emit('tick.error', lastError, null, 'error');
+    } finally {
+      ticking = false;   // 无论成败都释放互斥锁
     }
   }
 
@@ -214,9 +232,15 @@ export function createEngine({ log = () => {}, onEvent = () => {} } = {}) {
       writeLock();
       startedAt = new Date().toISOString();
       lastWatchdog = 0; lastBeat = 0;
-      // 立刻跑一轮扫描，让新用户装完就有内容
-      setTimeout(() => { tick().catch(() => {}); }, 800);
-      timer = setInterval(() => { tick().catch(() => {}); }, 3000);
+      // 自续期循环：上一拍跑完再排下一拍，天然不会重叠（配合 tick 里的互斥锁双保险）
+      const loop = async () => {
+        if (!running) return;
+        try { await tick(); } catch { /* tick 内部已记 */ }
+        if (!running) return;
+        timer = setTimeout(loop, 3000);
+        if (timer.unref) timer.unref();
+      };
+      timer = setTimeout(loop, 800);
       if (timer.unref) timer.unref();
       emit('engine.start', '调度引擎已启动');
       return { running: true, startedAt };
@@ -224,7 +248,7 @@ export function createEngine({ log = () => {}, onEvent = () => {} } = {}) {
     async stop() {
       running = false;
       clearLock();
-      if (timer) { clearInterval(timer); timer = null; }
+      if (timer) { clearTimeout(timer); timer = null; }
       emit('engine.stop', '调度引擎已停止');
       return { running: false };
     },
@@ -248,7 +272,7 @@ export function createEngine({ log = () => {}, onEvent = () => {} } = {}) {
       const cfg = loadConfig();
       return {
         running, startedAt, ticks, lastError,
-        draining,
+        draining, ticking,
         tickSec: 3,
         pulseTimeoutSec: cfg.settings.pulseTimeoutSec,
         db: { items: q.get('SELECT COUNT(*) n FROM items')?.n ?? 0, tasks: q.get('SELECT COUNT(*) n FROM tasks')?.n ?? 0 },

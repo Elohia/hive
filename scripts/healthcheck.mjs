@@ -293,9 +293,13 @@ if (db) {
     try {
       const p = await exMod.mod.probe();
       const names = Object.keys(p);
-      for (const [n, v] of Object.entries(p)) add(`executors.${n}`, v.ok ? 'PASS' : 'WARN', v.ok ? (v.version || 'ok') : (v.reason || '不可用'));
+      for (const [n, v] of Object.entries(p)) {
+        if (v && v.disabled) { add(`executors.${n}`, 'SKIP', `已在 config 中关闭${v.reason ? '：' + v.reason : ''}`); continue; }
+        add(`executors.${n}`, v.ok ? 'PASS' : 'WARN', v.ok ? (v.version || 'ok') : (v.reason || '不可用'));
+      }
+      const active = names.filter((n) => !p[n].disabled);
       if (!names.length) add('executors', 'WARN', 'probe() 返回空');
-      else if (names.every((n) => !p[n].ok)) add('executors', 'FAIL', '所有执行器都不可用');
+      else if (active.length && active.every((n) => !p[n].ok)) add('executors', 'FAIL', '所有启用的执行器都不可用');
     } catch (e) { add('executors', 'FAIL', `probe() 抛错: ${String(e.message).slice(0, 160)}`); }
   } else {
     add('executors.index', 'WARN', `${exMod.reason || 'probe() 未导出'} → 改用独立命令探测（降级）`);

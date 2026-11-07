@@ -46,9 +46,13 @@ for (const [name, v] of Object.entries(p)) {
   console.log(`   ${name.padEnd(7)} ok=${String(v.ok).padEnd(5)} version=${String(v.version ?? '-').padEnd(28)} ${v.ok ? '' : 'reason=' + v.reason}`);
 }
 console.log(`   probe 耗时 ${Date.now() - tProbe}ms`);
-const versioned = ['node', 'pwsh', 'llm', 'dsh', 'pi', 'codex', 'claude', 'shell'];
+const versioned = ['node', 'pwsh', 'llm', 'dsh', 'pi', 'codex', 'claude', 'shell', 'proc'];
 for (const n of versioned) check(`probe.${n}`, p[n]?.ok === true, `version=${p[n]?.version ?? '-'}`);
-check('probe.proc.disabled_by_default', p.proc?.ok === false, p.proc?.reason);
+// proc 现在是补齐状态（默认 pwsh 基座）；契约改为「配了 command 就必须能探到版本且未被禁用」
+check('probe.proc.configured', p.proc?.ok === true && p.proc?.disabled !== true, `version=${p.proc?.version ?? '-'} reason=${p.proc?.reason ?? '-'}`);
+// grok 是可选外部执行器（依赖本机 Grok Bot 的消息桥），桥没起 = SKIP 而不是 FAIL
+if (p.grok?.ok) check('probe.grok', true, `version=${p.grok.version ?? '-'}`);
+else skip('probe.grok', '消息桥未就绪（可选外部执行器，离线不算回归）', String(p.grok?.reason || '').slice(0, 120));
 check('probe.version.shape', versioned.every((n) => typeof p[n]?.version === 'string' && p[n].version.length > 0), '每个可执行器都拿到版本字符串');
 
 // ---------------------------------------------------------------- 3 proc 层

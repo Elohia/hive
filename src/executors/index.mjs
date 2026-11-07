@@ -17,6 +17,7 @@ import pi from './pi.mjs';
 import codex from './codex.mjs';
 import claude from './claude.mjs';
 import shell from './shell.mjs';
+import grok from './grok.mjs';
 
 const EXECUTORS = new Map([
   [llm.name, llm],
@@ -25,6 +26,8 @@ const EXECUTORS = new Map([
   [codex.name, codex],
   [claude.name, claude],
   [shell.name, shell],
+  // Grok Bot（本地消息桥 http://127.0.0.1:8799）：一个有记忆的人格会话当执行者
+  [grok.name, grok],
   // 通用兜底：跑任意命令（config.executors.proc.command 或 ctx.command）
   [proc.name, proc],
 ]);
@@ -73,11 +76,19 @@ export async function probe(opts = {}) {
     const ex = EXECUTORS.get(name);
     if (!ex) return [name, { ok: false, reason: `未注册的执行器: ${name}`, version: null }];
     const c = cfg.executors?.[name] || {};
+    // 显式关闭的执行器：不再探活，并标 disabled —— 否则自检会一直把「有意关掉的」
+    // 条目报成「不可用 / 请补齐 CLI」，让人误以为坏了。
+    if (c.enabled === false) {
+      return [name, {
+        ok: false, disabled: true, version: null, kind: ex.kind, enabled: false,
+        reason: `已在 config/hive.json 中关闭${c.note ? '：' + String(c.note).slice(0, 140) : ''}`,
+      }];
+    }
     try {
       const r = await ex.available({ config: cfg });
-      return [name, { ...r, kind: ex.kind, enabled: c.enabled !== false }];
+      return [name, { ...r, kind: ex.kind, enabled: c.enabled !== false, disabled: false }];
     } catch (e) {
-      return [name, { ok: false, reason: `available() 抛错: ${e?.message || e}`, version: null, kind: ex.kind, enabled: c.enabled !== false }];
+      return [name, { ok: false, disabled: false, reason: `available() 抛错: ${e?.message || e}`, version: null, kind: ex.kind, enabled: c.enabled !== false }];
     }
   });
 

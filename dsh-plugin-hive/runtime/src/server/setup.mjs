@@ -182,6 +182,7 @@ export async function detectDependency(id, { probe, channels } = {}) {
   if (pack && typeof pack.ok === 'boolean') {
     return {
       ok: !!pack.ok,
+      disabled: pack.disabled === true,
       path: pack.path ?? null,
       version: pack.version ?? null,
       error: pack.ok ? null : (pack.reason || pack.error || `${dep.command} 不可用`),
@@ -366,19 +367,24 @@ export async function doctorReport({ cfg, probe, channels, budget, dbStats, serv
   // ── 5. 执行器探活 ─────────────────────────────────────────────
   const probes = Object.entries(probe?.probes || {});
   const execProbes = probes.filter(([n]) => !RUNTIME_PROBE_NAMES.has(n));
-  const okNames = execProbes.filter(([, v]) => v && v.ok).map(([n]) => n);
-  const badNames = execProbes.filter(([, v]) => !(v && v.ok)).map(([n]) => n);
+  // 显式关闭的执行器不算「不可用」：它们是被有意关掉的，不该让自检一直报 WARN
+  const disabledNames = execProbes.filter(([, v]) => v && v.disabled).map(([n]) => n);
+  const activeProbes = execProbes.filter(([, v]) => !(v && v.disabled));
+  const okNames = activeProbes.filter(([, v]) => v && v.ok).map(([n]) => n);
+  const badNames = activeProbes.filter(([, v]) => !(v && v.ok)).map(([n]) => n);
   const execStatus = !probe?.ready ? 'FAIL' : (okNames.length === 0 ? 'FAIL' : (badNames.length ? 'WARN' : 'PASS'));
   push({
     id: 'executors', group: 'core', title: '执行器探活',
     status: execStatus,
     detail: probe?.ready
-      ? `可用 ${okNames.length}/${execProbes.length}：${okNames.join(', ') || '—'}${badNames.length ? ` · 不可用：${badNames.join(', ')}` : ''}`
+      ? `可用 ${okNames.length}/${activeProbes.length}：${okNames.join(', ') || '—'}`
+        + (badNames.length ? ` · 不可用：${badNames.join(', ')}` : '')
+        + (disabledNames.length ? ` · 已关闭：${disabledNames.join(', ')}` : '')
       : `执行器注册表未就绪：${probe?.reason || '未知'}${probe?.detail ? '（' + probe.detail + '）' : ''}`,
     fix: execStatus === 'PASS' ? null
       : (!probe?.ready
         ? '检查 src/executors/index.mjs 是否存在且导出 probe()'
-        : `补齐执行器 CLI（${badNames.join(', ') || '无'}），或在 config/hive.json 关闭不用的执行器`),
+        : `补齐执行器 CLI（${badNames.join(', ') || '无'}），或在 config/hive.json 把不用的执行器 enabled 设为 false`),
   });
 
   // ── 6. 外部通道 ───────────────────────────────────────────────
@@ -454,11 +460,12 @@ export async function doctorReport({ cfg, probe, channels, budget, dbStats, serv
     let det;
     try { det = await detectDependency(dep.id, { probe, channels }); }
     catch (e) { det = { ok: false, path: null, version: null, error: String(e && e.message ? e.message : e), source: 'error' }; }
-    const installable = !det.ok && !dep.manual;
+    const installable = !det.ok && !det.disabled && !dep.manual;
+    const isDisabled = det.disabled === true;
     deps.push({
       id: dep.id, label: dep.label, command: dep.command, pkg: dep.pkg,
       manual: !!dep.manual, required: !!dep.required,
-      ok: !!det.ok, path: det.path || null, version: det.version || null,
+      ok: !!det.ok, disabled: isDisabled, path: det.path || null, version: det.version || null,
       error: det.error || null, source: det.source || null,
       installable, guide: !det.ok && dep.manual ? (dep.guide || []) : undefined,
     });
@@ -466,18 +473,23 @@ export async function doctorReport({ cfg, probe, channels, budget, dbStats, serv
       id: 'dep:' + dep.id,
       group: 'deps',
       title: dep.label,
-      status: det.ok ? 'PASS' : 'WARN',
+      // 被有意关掉的不算「缺依赖」：标 SKIP，避免自检一直催你去装一个你故意没装的东西
+      status: det.ok ? 'PASS' : (isDisabled ? 'SKIP' : 'WARN'),
       detail: det.ok
         ? `${det.version || '已安装'}${det.path ? ' · ' + det.path : ''}`
-        : `未检测到：${det.error || dep.command + ' 不在 PATH 中'}`,
+        : (isDisabled
+          ? `已关闭：${det.error || 'config 中 enabled=false'}`
+          : `未检测到：${det.error || dep.command + ' 不在 PATH 中'}`),
       fix: det.ok ? null
-        : (dep.manual
-          ? (dep.guide || []).join(' ／ ')
-          : `点「一键安装」执行 npm install -g ${dep.pkg}`),
+        : (isDisabled
+          ? `需要时把 config/hive.json 里对应执行器的 enabled 改回 true，再点「重新检查」`
+          : (dep.manual
+            ? (dep.guide || []).join(' ／ ')
+            : `点「一键安装」执行 npm install -g ${dep.pkg}`)),
       install: installable ? dep.id : null,
       installable,
       guide: !det.ok && dep.manual ? (dep.guide || []) : undefined,
-      meta: { command: dep.command, pkg: dep.pkg, note: dep.note || null, required: !!dep.required },
+      meta: { command: dep.command, pkg: dep.pkg, note: dep.note || null, required: !!dep.required, disabled: isDisabled },
     });
   }
 
